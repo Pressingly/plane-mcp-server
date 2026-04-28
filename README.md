@@ -85,9 +85,39 @@ Connect to the hosted Plane MCP server using a Personal Access Token (PAT).
 }
 ```
 
-### 4. SSE Transport (Legacy)
+### 4. HTTP with AWS Cognito
 
-⚠️ **Legacy Transport**: SSE (Server-Sent Events) transport is maintained for backward compatibility. New implementations should use the HTTP transport (sections 2 or 3) instead.
+When the Cognito-related environment variables below are **all** set, `python -m plane_mcp http` (or the container entrypoint in `http` mode) serves MCP OAuth via FastMCP’s `AWSCognitoProvider`. In that case the default multi-mount app (Plane OAuth at `/http`, SSE at `/`) is **not** started in the same process—use a separate deployment or clear the Cognito variables if you need those transports.
+
+- **MCP URL**: `{MCP_BASE_URL}/mcp` (Cognito session; the access token is sent to Plane as `Authorization: Bearer …` from the MCP session).
+- **Callback**: register **`{MCP_BASE_URL}/auth/callback`** in the Cognito app client.
+- **PAT fallback** (unchanged): `{MCP_BASE_URL}/http/api-key/mcp` with `Authorization` + `X-Workspace-slug` headers.
+- **Health**: `GET {MCP_BASE_URL}/healthz`
+
+Required env vars for this mode:
+
+| Variable | Purpose |
+|----------|---------|
+| `MCP_BASE_URL` | Public base URL of this MCP server (no trailing slash required) |
+| `COGNITO_USER_POOL_ID` | Cognito user pool ID |
+| `COGNITO_AWS_REGION` | AWS region of the pool |
+| `OIDC_CLIENT_ID` | Cognito app client ID |
+| `OIDC_CLIENT_SECRET` | Cognito app client secret |
+
+Optional:
+
+- `MCP_ALLOWED_CLIENT_REDIRECT_URIS` — comma-separated redirect URI patterns for DCR (defaults allow `http://localhost:*/*` and `http://127.0.0.1:*/*`).
+- `REDIS_HOST` / `REDIS_PORT` — persist OAuth client registrations (recommended in production).
+- `PLANE_BASE_URL` or `PLANE_INTERNAL_BASE_URL` — Plane API host for tools.
+- `PLANE_WORKSPACE_SLUG` — default workspace when the IdP token has no `workspace_slug` claim (e.g. Cognito).
+
+**`invalid_grant` after returning to `/auth/callback` (token exchange):** Often caused by Cognito expecting a **resource server** matching the MCP `resource` URL when FastMCP forwards `resource=` to `/oauth2/authorize`. This server’s Cognito mode **drops `resource` on the upstream authorize request** so a pool that only allowlists **`…/auth/callback`** can still complete token exchange—**no Cognito change required.** If your admins *have* configured a resource server, you can still use this behavior (Cognito typically accepts authorize without `resource`). For the canonical IdP-side fix, see the [FastMCP AWS Cognito guide](https://gofastmcp.com/v2/integrations/aws-cognito) (“Configure Resource Server”).
+
+**`redirect_mismatch` on the Cognito error page:** Cognito only accepts the **`redirect_uri`** your MCP server sends on `/oauth2/authorize`. FastMCP uses **`{MCP_BASE_URL}/auth/callback`** unless **`MCP_COGNITO_REDIRECT_URI`** is set to the full allowlisted callback URL. See server logs on startup for the exact **`IdP redirect_uri`**. Register that URL under the app client’s **Allowed callback URLs**—`http://127.0.0.1:8211/...` and `http://localhost:8211/...` are different; register the one that matches **`MCP_BASE_URL`** / **`MCP_COGNITO_REDIRECT_URI`** (or register both). Restart the server after changing env.
+
+### 5. SSE Transport (Legacy)
+
+⚠️ **Legacy Transport**: SSE (Server-Sent Events) transport is maintained for backward compatibility. New implementations should use the HTTP transport (sections 2, 3, or 4) instead.
 
 Connect to the hosted Plane MCP server using OAuth authentication via Server-Sent Events.
 
