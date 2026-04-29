@@ -13,10 +13,6 @@ A Model Context Protocol (MCP) server for Plane integration. This server provide
 
 The server supports three transport methods. **We recommend using `uvx`** as it doesn't require installation.
 
-**Requirements**:
-- **Python 3.10+** (for stdio transport, via `uvx`)
-- **Node.js 22+** (for remote transports, via `npx`)
-
 ### 1. Stdio Transport (for local use)
 
 **MCP Client Configuration** (using uvx - recommended):
@@ -62,7 +58,7 @@ Connect to the hosted Plane MCP server using OAuth authentication.
 
 Connect to the hosted Plane MCP server using a Personal Access Token (PAT).
 
-**URL**: `https://mcp.plane.so/http/api-key/mcp`
+**URL**: `https://mcp.plane.so/api-key/mcp`
 
 **Headers**:
 - `Authorization: Bearer <PAT_TOKEN>`
@@ -85,9 +81,41 @@ Connect to the hosted Plane MCP server using a Personal Access Token (PAT).
 }
 ```
 
-### 4. SSE Transport (Legacy)
+### 4. HTTP with AWS Cognito
 
-⚠️ **Legacy Transport**: SSE (Server-Sent Events) transport is maintained for backward compatibility. New implementations should use the HTTP transport (sections 2 or 3) instead.
+When the Cognito-related environment variables below are **all** set, `python -m plane_mcp http` (or the container entrypoint in `http` mode) serves MCP OAuth via FastMCP’s `AWSCognitoProvider`. In that case the default multi-mount app (Plane OAuth at `/http`, SSE at `/`) is **not** started in the same process—use a separate deployment or clear the Cognito variables if you need those transports.
+
+- **MCP URL**: `{MCP_BASE_URL}/mcp` (Cognito session; the access token is sent to Plane as `Authorization: Bearer …` from the MCP session).
+- **Do not use** `{MCP_BASE_URL}/http/mcp` in this mode — that path belongs to the **non-Cognito** HTTP layout; Cognito-only installs serve MCP at **`/mcp`** only.
+- **Callback**: register **`{MCP_BASE_URL}/auth/callback`** in the Cognito app client.
+- **PAT fallback** (unchanged): `{MCP_BASE_URL}/http/api-key/mcp` with `Authorization` + `X-Workspace-slug` headers.
+- **Health**: `GET {MCP_BASE_URL}/healthz`
+
+Required env vars for this mode:
+
+| Variable | Purpose |
+|----------|---------|
+| `MCP_BASE_URL` | Public base URL of this MCP server (no trailing slash required) |
+| `COGNITO_USER_POOL_ID` | Cognito user pool ID |
+| `COGNITO_AWS_REGION` | AWS region of the pool |
+| `OIDC_CLIENT_ID` | Cognito app client ID |
+| `OIDC_CLIENT_SECRET` | Cognito app client secret |
+
+Optional:
+
+- `COGNITO_RELAX_OAUTH_RESOURCE_MISMATCH` — when **`true`** (default), allow OAuth **`/authorize`** when the MCP client’s **`resource`** URL does not exactly match **`MCP_BASE_URL`** (e.g. **`http://127.0.0.1:…/mcp`** vs **`https://host…/mcp`**). FastMCP otherwise returns **`invalid_target`** before redirecting to Cognito.
+- `MCP_ALLOWED_CLIENT_REDIRECT_URIS` — optional comma-separated fnmatch patterns for MCP Dynamic Client Registration redirects. **Unset (default): allow any redirect URI** so clients using **`cursor://`**, **`vscode://`**, or loopback URLs can complete OAuth. Set explicit patterns only in locked-down environments (see FastMCP `redirect_validation`).
+- `REDIS_HOST` / `REDIS_PORT` — persist OAuth client registrations (recommended in production).
+- `PLANE_BASE_URL` or `PLANE_INTERNAL_BASE_URL` — Plane API host for tools.
+- `PLANE_WORKSPACE_SLUG` — default workspace when the IdP token has no `workspace_slug` claim (e.g. Cognito).
+
+**`invalid_grant` after returning to `/auth/callback` (token exchange):** Often caused by Cognito expecting a **resource server** matching the MCP `resource` URL when FastMCP forwards `resource=` to `/oauth2/authorize`. This server’s Cognito mode **drops `resource` on the upstream authorize request** so a pool that only allowlists **`…/auth/callback`** can still complete token exchange—**no Cognito change required.** If your admins *have* configured a resource server, you can still use this behavior (Cognito typically accepts authorize without `resource`). For the canonical IdP-side fix, see the [FastMCP AWS Cognito guide](https://gofastmcp.com/v2/integrations/aws-cognito) (“Configure Resource Server”).
+
+**`redirect_mismatch` on the Cognito error page:** Cognito only accepts the **`redirect_uri`** your MCP server sends on `/oauth2/authorize`. FastMCP uses **`{MCP_BASE_URL}/auth/callback`** unless **`MCP_COGNITO_REDIRECT_URI`** is set to the full allowlisted callback URL. See server logs on startup for the exact **`IdP redirect_uri`**. Register that URL under the app client’s **Allowed callback URLs**—`http://127.0.0.1:8211/...` and `http://localhost:8211/...` are different; register the one that matches **`MCP_BASE_URL`** / **`MCP_COGNITO_REDIRECT_URI`** (or register both). Restart the server after changing env.
+
+### 5. SSE Transport (Legacy)
+
+⚠️ **Legacy Transport**: SSE (Server-Sent Events) transport is maintained for backward compatibility. New implementations should use the HTTP transport (sections 2, 3, or 4) instead.
 
 Connect to the hosted Plane MCP server using OAuth authentication via Server-Sent Events.
 
@@ -222,127 +250,13 @@ The server provides comprehensive tools for interacting with Plane. All tools us
 | `update_work_item_property` | Update a work item property with partial data |
 | `delete_work_item_property` | Delete a work item property by ID |
 
-### Epics
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_epics` | List all epics in a project |
-| `create_epic` | Create a new epic |
-| `retrieve_epic` | Retrieve an epic by ID |
-| `update_epic` | Update an epic by ID |
-| `delete_epic` | Delete an epic by ID |
-
-### Milestones
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_milestones` | List all milestones in a project |
-| `create_milestone` | Create a new milestone |
-| `retrieve_milestone` | Retrieve a milestone by ID |
-| `update_milestone` | Update a milestone by ID |
-| `delete_milestone` | Delete a milestone by ID |
-| `add_work_items_to_milestone` | Add work items to a milestone |
-| `remove_work_items_from_milestone` | Remove work items from a milestone |
-| `list_milestone_work_items` | List work items in a milestone |
-
-### Labels
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_labels` | List all labels in a project |
-| `create_label` | Create a new label |
-| `retrieve_label` | Retrieve a label by ID |
-| `update_label` | Update a label by ID |
-| `delete_label` | Delete a label by ID |
-
-### States
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_states` | List all states in a project |
-| `create_state` | Create a new state |
-| `retrieve_state` | Retrieve a state by ID |
-| `update_state` | Update a state by ID |
-| `delete_state` | Delete a state by ID |
-
-### Work Item Comments
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_work_item_comments` | List comments for a work item |
-| `retrieve_work_item_comment` | Retrieve a specific comment for a work item |
-| `create_work_item_comment` | Create a comment for a work item |
-| `update_work_item_comment` | Update a comment for a work item |
-| `delete_work_item_comment` | Delete a comment for a work item |
-
-### Work Item Links
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_work_item_links` | List links for a work item |
-| `retrieve_work_item_link` | Retrieve a specific link for a work item |
-| `create_work_item_link` | Create a link for a work item |
-| `update_work_item_link` | Update a link for a work item |
-| `delete_work_item_link` | Delete a link for a work item |
-
-### Work Item Types
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_work_item_types` | List all work item types in a project |
-| `create_work_item_type` | Create a new work item type |
-| `retrieve_work_item_type` | Retrieve a work item type by ID |
-| `update_work_item_type` | Update a work item type by ID |
-| `delete_work_item_type` | Delete a work item type by ID |
-
-### Work Item Relations
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_work_item_relations` | List relations for a work item |
-| `create_work_item_relation` | Create relations for a work item |
-| `remove_work_item_relation` | Remove a relation from a work item |
-
-### Work Item Activities
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_work_item_activities` | List activities for a work item |
-| `retrieve_work_item_activity` | Retrieve a specific activity for a work item |
-
-### Work Logs
-
-| Tool Name | Description |
-|-----------|-------------|
-| `list_work_logs` | List work logs for a work item |
-| `create_work_log` | Create a work log for a work item |
-| `update_work_log` | Update a work log for a work item |
-| `delete_work_log` | Delete a work log for a work item |
-
-### Pages
-
-| Tool Name | Description |
-|-----------|-------------|
-| `retrieve_workspace_page` | Retrieve a workspace page by ID |
-| `retrieve_project_page` | Retrieve a project page by ID |
-| `create_workspace_page` | Create a workspace page |
-| `create_project_page` | Create a project page |
-
-### Workspaces
-
-| Tool Name | Description |
-|-----------|-------------|
-| `get_workspace_members` | Get all members of the current workspace |
-| `get_workspace_features` | Get features of the current workspace |
-| `update_workspace_features` | Update features of the current workspace |
-
 ### Users
 
 | Tool Name | Description |
 |-----------|-------------|
 | `get_me` | Get current authenticated user information |
 
-**Total Tools**: 100+ tools across 20 categories
+**Total Tools**: 55+ tools across 8 categories
 
 ## Development
 
