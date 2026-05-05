@@ -352,6 +352,7 @@ The server provides comprehensive tools for interacting with Plane. All tools us
 
 | Tool Name | Description |
 |-----------|-------------|
+| `list_workspaces` | List Plane workspaces the authenticated user belongs to (slug bootstrap) |
 | `get_workspace_members` | Get all members of the current workspace |
 | `get_workspace_features` | Get features of the current workspace |
 | `update_workspace_features` | Update features of the current workspace |
@@ -362,7 +363,7 @@ The server provides comprehensive tools for interacting with Plane. All tools us
 |-----------|-------------|
 | `get_me` | Get current authenticated user information |
 
-**Total Tools**: 100+ tools across 20 categories
+**Tool coverage:** Sections above summarize the main tool surface. The authoritative list of registered modules is `plane_mcp/tools/__init__.py` (`register_tools`).
 
 ## Development
 

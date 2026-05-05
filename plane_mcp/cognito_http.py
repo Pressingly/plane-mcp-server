@@ -297,7 +297,11 @@ def _build_cognito_provider() -> AWSCognitoProvider:
     if forward_pkce:
         logger.info("Cognito HTTP: COGNITO_OIDC_FORWARD_PKCE=true (PKCE sent to Cognito authorize/token)")
     else:
-        logger.info("Cognito HTTP: upstream PKCE off (default). Tools use Cognito access token as Plane Bearer.")
+        logger.info(
+            "Cognito HTTP: upstream PKCE off (default). Plane tools use Cognito ID token as "
+            "Bearer when attached to the session (see plane_mcp.client._plane_bearer_for); "
+            "otherwise the access token."
+        )
 
     auth_meth = os.getenv("COGNITO_TOKEN_ENDPOINT_AUTH_METHOD", "none").strip() or "none"
     provider._token_endpoint_auth_method = auth_meth  # type: ignore[attr-defined]
