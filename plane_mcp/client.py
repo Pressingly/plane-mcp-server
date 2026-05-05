@@ -48,9 +48,13 @@ def get_plane_client_context(workspace_slug_from_client: str | None = None) -> P
     Workspace slug: if ``workspace_slug_from_client`` is set, it wins; otherwise
     token ``claims['workspace_slug']`` (e.g. PAT header), then ``PLANE_WORKSPACE_SLUG``.
 
-    Environment variables:
-    - PLANE_INTERNAL_BASE_URL: Internal URL for Plane API (preferred for server-to-server calls)
-    - PLANE_BASE_URL: Base URL for Plane API (fallback, default: https://api.plane.so)
+    Environment variables (Plane API host):
+    - PLANE_INTERNAL_BASE_URL: Optional internal origin for the Plane deployment. When set,
+      it is used ahead of PLANE_BASE_URL for **all** SDK calls in this process (OAuth and PAT).
+      For Cognito/browser flows that must match Traefik + oauth2-proxy like the web UI, leave it
+      unset and set only PLANE_BASE_URL to the public Plane URL.
+    - PLANE_BASE_URL: Plane deployment origin (fallback: https://api.plane.so). Used whenever
+      PLANE_INTERNAL_BASE_URL is unset.
 
     Returns:
         PlaneClientContext containing configured PlaneClient instance and workspace slug

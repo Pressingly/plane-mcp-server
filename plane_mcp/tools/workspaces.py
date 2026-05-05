@@ -32,7 +32,8 @@ def _plane_root_base() -> str:
 
     Plane's "list user workspaces" lives at ``/api/users/me/workspaces/`` (the **app** API,
     not the public ``/api/v1/`` surface — see Plane backend ``UserWorkSpacesEndpoint``).
-    Prefers ``PLANE_INTERNAL_BASE_URL`` (server-to-server); otherwise ``PLANE_BASE_URL``.
+    Prefers ``PLANE_INTERNAL_BASE_URL`` when set; otherwise ``PLANE_BASE_URL`` (typical for
+    Cognito + public Plane URLs).
     """
     base = os.getenv("PLANE_INTERNAL_BASE_URL") or os.getenv("PLANE_BASE_URL", "https://api.plane.so")
     return base.rstrip("/")
