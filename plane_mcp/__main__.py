@@ -125,7 +125,7 @@ def main() -> None:
                 "HTTP mode: Cognito is partially configured (COGNITO_USER_POOL_ID and/or OIDC_CLIENT_ID set) "
                 f"but required variables are missing or empty: {', '.join(missing)}. "
                 "Set all of: MCP_BASE_URL, COGNITO_USER_POOL_ID, COGNITO_AWS_REGION, OIDC_CLIENT_ID, "
-                "MCP_JWT_SIGNING_KEY. "
+                "MCP_JWT_SIGNING_KEY, MCP_ALLOWED_CLIENT_REDIRECT_URIS. "
                 "To use Plane OAuth at /http/mcp instead, unset COGNITO_USER_POOL_ID and OIDC_CLIENT_ID and set "
                 "PLANE_OAUTH_PROVIDER_CLIENT_ID and PLANE_OAUTH_PROVIDER_CLIENT_SECRET."
             )

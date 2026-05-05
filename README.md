@@ -97,9 +97,9 @@ When **all** of the following environment variables are set, `python -m plane_mc
 
 **Cognito app client:** use a **public** client (client ID only). Register **`{MCP_BASE_URL}/auth/callback`** as an allowed callback URL (or the full URL from `MCP_COGNITO_REDIRECT_URI` if you set that). Do not point MCP clients at `{MCP_BASE_URL}/http/mcp` in this mode.
 
-**Required:** `MCP_BASE_URL`, `COGNITO_USER_POOL_ID`, `COGNITO_AWS_REGION`, `OIDC_CLIENT_ID`, `MCP_JWT_SIGNING_KEY` (long random secret, e.g. `openssl rand -hex 32`).
+**Required:** `MCP_BASE_URL`, `COGNITO_USER_POOL_ID`, `COGNITO_AWS_REGION`, `OIDC_CLIENT_ID`, `MCP_JWT_SIGNING_KEY` (long random secret, e.g. `openssl rand -hex 32`), `MCP_ALLOWED_CLIENT_REDIRECT_URIS` (comma-separated fnmatch patterns for MCP client redirect URIs, e.g. `cursor://*,http://127.0.0.1:*/*`).
 
-**Optional:** `MCP_COGNITO_REDIRECT_URI` (or legacy alias `PLANE_MCP_COGNITO_REDIRECT_URI`), `COGNITO_TOKEN_ENDPOINT_AUTH_METHOD` (default `none` for public clients), `COGNITO_RELAX_OAUTH_RESOURCE_MISMATCH` (default `true`), `COGNITO_REQUIRE_CONSENT`, `COGNITO_OIDC_FORWARD_PKCE`, `MCP_ALLOWED_CLIENT_REDIRECT_URIS`, `REDIS_HOST` / `REDIS_PORT`, `PLANE_BASE_URL` / `PLANE_INTERNAL_BASE_URL`, `PLANE_WORKSPACE_SLUG`.
+**Optional:** `MCP_COGNITO_REDIRECT_URI` (or legacy alias `PLANE_MCP_COGNITO_REDIRECT_URI`), `COGNITO_TOKEN_ENDPOINT_AUTH_METHOD` (default `none` for public clients), `COGNITO_RELAX_OAUTH_RESOURCE_MISMATCH` (default `true`), `COGNITO_REQUIRE_CONSENT`, `COGNITO_OIDC_FORWARD_PKCE`, `REDIS_HOST` / `REDIS_PORT`, `PLANE_BASE_URL` / `PLANE_INTERNAL_BASE_URL`, `PLANE_WORKSPACE_SLUG`.
 
 This build subclasses FastMCP’s Cognito provider to omit `resource` on the upstream authorize request when your pool has no resource server, optionally relax MCP `resource` vs `MCP_BASE_URL` mismatches, and attach the Cognito **ID token** to the MCP session when available so Plane’s gateway can resolve `cognito:username` the same way as the web UI (see `plane_mcp/client.py`).
 

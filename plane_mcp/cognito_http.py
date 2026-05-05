@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP
@@ -45,6 +45,7 @@ REQUIRED_HTTP_ENV_VARS = (
     "COGNITO_AWS_REGION",
     "OIDC_CLIENT_ID",
     "MCP_JWT_SIGNING_KEY",
+    "MCP_ALLOWED_CLIENT_REDIRECT_URIS",
 )
 
 _oauth_kv_singleton: MemoryStore | RedisStore | None = None
@@ -113,12 +114,14 @@ class _PlaneCognitoProvider(AWSCognitoProvider):
     """Cognito OAuth: drop ``resource`` on upstream authorize when pool has no resource server.
 
     Also attaches the upstream Cognito **ID token** to the validated MCP ``AccessToken.claims``
-    so tools can forward it to Plane API instead of the access token. Plane's Traefik
-    chain runs ForwardAuth via oauth2-proxy with ``--user-id-claim=cognito:username``;
-    Cognito **access** tokens have only ``username`` (no prefix), so plane-mcp would
-    otherwise authenticate as ``sub@<smb>.com``. Forwarding the ID token (which has
-    ``cognito:username``) gives plane-mcp the same Plane user as the web cookie flow
-    without any oauth2-proxy / Plane / AWS changes. See ``plane_mcp/client.py``.
+    so tools can forward it to Plane API instead of the access token. ``load_access_token`` returns
+    ``None`` if that ID token cannot be resolved (no silent access-token-only session).
+
+    Plane's Traefik chain runs ForwardAuth via oauth2-proxy with ``--user-id-claim=cognito:username``;
+    Cognito **access** tokens have only ``username`` (no prefix), so plane-mcp would otherwise
+    authenticate as ``sub@<smb>.com``. Forwarding the ID token (which has ``cognito:username``)
+    gives plane-mcp the same Plane user as the web cookie flow without any oauth2-proxy / Plane
+    / AWS changes. See ``plane_mcp/client.py``.
     """
 
     async def load_access_token(self, token: str) -> AccessToken | None:
@@ -129,28 +132,28 @@ class _PlaneCognitoProvider(AWSCognitoProvider):
             payload = self.jwt_issuer.verify_token(token)
             jti = payload.get("jti")
             if not jti:
-                return validated
+                return None
             jti_mapping = await self._jti_mapping_store.get(key=jti)
             if not jti_mapping:
-                return validated
+                return None
             upstream_id = getattr(jti_mapping, "upstream_token_id", None) or (
                 jti_mapping.get("upstream_token_id") if isinstance(jti_mapping, dict) else None
             )
             if not upstream_id:
-                return validated
+                return None
             ts = await self._upstream_token_store.get(key=upstream_id)
             raw = getattr(ts, "raw_token_data", None) if ts else None
             if raw is None and isinstance(ts, dict):
                 raw = ts.get("raw_token_data")
             id_token = (raw or {}).get("id_token") if isinstance(raw, dict) else None
             if not isinstance(id_token, str) or not id_token:
-                return validated
+                return None
             new_claims = dict(validated.claims or {})
             new_claims["id_token"] = id_token
             return validated.model_copy(update={"claims": new_claims})
         except Exception as exc:
             logger.warning("Cognito HTTP: failed to attach upstream id_token to claims: %s", exc)
-            return validated
+            return None
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         """Allow MCP clients whose ``resource`` URL does not match ``MCP_BASE_URL`` (e.g. localhost vs Traefik).
@@ -228,19 +231,24 @@ def validate_cognito_http_env() -> None:
     missing = cognito_http_env_missing()
     if missing:
         raise ValueError("http mode (Cognito) is missing required env vars: " + ", ".join(missing))
+    if not _allowed_client_redirect_uris():
+        raise ValueError(
+            "http mode (Cognito) requires MCP_ALLOWED_CLIENT_REDIRECT_URIS with at least one non-empty "
+            "pattern (comma-separated; fnmatch wildcards allowed, e.g. cursor://*,http://127.0.0.1:*/*)"
+        )
 
 
 def _allowed_client_redirect_uris() -> list[str] | None:
     """Redirect URI patterns for MCP OAuth Dynamic Client Registration (fnmatch wildcards).
 
-    ``None`` means allow **any** client redirect URI (FastMCP default; needed for clients that use
-    custom schemes such as ``cursor://``). Set ``MCP_ALLOWED_CLIENT_REDIRECT_URIS`` to a
-    comma-separated list to restrict patterns in production.
+    Returns ``None`` when the env var is unset/blank or contains no non-empty patterns after splitting.
+    Cognito HTTP startup requires at least one pattern (see ``validate_cognito_http_env``).
     """
     raw = os.getenv("MCP_ALLOWED_CLIENT_REDIRECT_URIS", "").strip()
     if not raw:
         return None
-    return [uri.strip() for uri in raw.split(",") if uri.strip()]
+    out = [uri.strip() for uri in raw.split(",") if uri.strip()]
+    return out or None
 
 
 def _oauth_client_storage() -> MemoryStore | RedisStore:
@@ -264,15 +272,10 @@ def _consent_enabled() -> bool:
 
 
 def _build_cognito_provider() -> AWSCognitoProvider:
+    validate_cognito_http_env()
     base_url, redirect_path = _cognito_callback_base_and_path()
-    redirect_patterns = _allowed_client_redirect_uris()
-    if redirect_patterns is None:
-        logger.info(
-            "Cognito HTTP: MCP_ALLOWED_CLIENT_REDIRECT_URIS unset — any MCP client redirect URI allowed "
-            "(needed for Cursor/custom OAuth schemes). Set MCP_ALLOWED_CLIENT_REDIRECT_URIS to restrict."
-        )
-    else:
-        logger.info("Cognito HTTP: MCP client redirect URI patterns: %s", redirect_patterns)
+    redirect_patterns = cast(list[str], _allowed_client_redirect_uris())
+    logger.info("Cognito HTTP: MCP client redirect URI patterns: %s", redirect_patterns)
 
     jwt_signing_key = os.environ["MCP_JWT_SIGNING_KEY"].strip()
     # FastMCP's AWSCognitoProvider requires non-empty client_secret; public Cognito apps
@@ -330,7 +333,6 @@ async def healthz(_request: Request) -> JSONResponse:
 
 
 def build_cognito_http_starlette_app() -> Starlette:
-    validate_cognito_http_env()
     cognito_mcp = get_cognito_http_mcp()
     header_mcp = get_header_mcp()
     cognito_app = cognito_mcp.http_app(stateless_http=True)
