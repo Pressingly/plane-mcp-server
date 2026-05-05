@@ -1,17 +1,13 @@
-"""AWS Cognito browser OAuth for streamable HTTP MCP.
+"""AWS Cognito browser OAuth for streamable HTTP MCP (see README, "HTTP with AWS Cognito").
 
 When ``cognito_http_env_ready()`` is true, ``python -m plane_mcp http`` serves MCP at
-``{MCP_BASE_URL}/mcp`` with FastMCP's ``AWSCognitoProvider``.
+``{MCP_BASE_URL}/mcp`` using a public Cognito app client and ``MCP_JWT_SIGNING_KEY``.
 
-After login, FastMCP validates the **Cognito access token** and exposes it on the session
-``AccessToken``; :func:`plane_mcp.client.get_plane_client_context` passes that string to
-``PlaneClient(..., access_token=...)``, so Plane receives ``Authorization: Bearer <cognito access jwt>``.
+``get_plane_client_context`` forwards the Cognito **ID token** to Plane when it is attached
+to the MCP session (see ``plane_mcp.client._plane_bearer_for``). Set ``PLANE_WORKSPACE_SLUG``
+when tokens have no ``workspace_slug`` claim.
 
-Set ``PLANE_BASE_URL`` / ``PLANE_INTERNAL_BASE_URL`` to your Plane API host. Cognito tokens
-usually do not include ``workspace_slug``; set ``PLANE_WORKSPACE_SLUG`` (or
-``PLANE_MCP_WORKSPACE_SLUG``) so tools use the correct workspace in API paths.
-
-Optional PAT mount: ``{MCP_BASE_URL}/http/api-key/mcp`` (same as default HTTP mode).
+PAT mount: ``{MCP_BASE_URL}/http/api-key/mcp``.
 """
 
 from __future__ import annotations
@@ -41,14 +37,14 @@ from starlette.routing import Mount, Route
 from plane_mcp.server import get_header_mcp
 from plane_mcp.tools import register_tools
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(f"fastmcp.{__name__}")
 
 REQUIRED_HTTP_ENV_VARS = (
     "MCP_BASE_URL",
     "COGNITO_USER_POOL_ID",
     "COGNITO_AWS_REGION",
     "OIDC_CLIENT_ID",
-    "OIDC_CLIENT_SECRET",
+    "MCP_JWT_SIGNING_KEY",
 )
 
 _oauth_kv_singleton: MemoryStore | RedisStore | None = None
@@ -137,8 +133,16 @@ class _PlaneCognitoProvider(AWSCognitoProvider):
             jti_mapping = await self._jti_mapping_store.get(key=jti)
             if not jti_mapping:
                 return validated
-            ts = await self._upstream_token_store.get(key=jti_mapping.upstream_token_id)
-            id_token = (ts.raw_token_data or {}).get("id_token") if ts else None
+            upstream_id = getattr(jti_mapping, "upstream_token_id", None) or (
+                jti_mapping.get("upstream_token_id") if isinstance(jti_mapping, dict) else None
+            )
+            if not upstream_id:
+                return validated
+            ts = await self._upstream_token_store.get(key=upstream_id)
+            raw = getattr(ts, "raw_token_data", None) if ts else None
+            if raw is None and isinstance(ts, dict):
+                raw = ts.get("raw_token_data")
+            id_token = (raw or {}).get("id_token") if isinstance(raw, dict) else None
             if not isinstance(id_token, str) or not id_token:
                 return validated
             new_claims = dict(validated.claims or {})
@@ -171,8 +175,8 @@ class _PlaneCognitoProvider(AWSCognitoProvider):
         ):
             logger.warning(
                 "Cognito OAuth: client resource %s != server MCP resource %s; continuing without "
-                "resource binding (COGNITO_RELAX_OAUTH_RESOURCE_MISMATCH). Prefer aligning PLANE_MCP_BASE_URL "
-                "/ MCP_BASE_URL with the MCP URL your client uses.",
+                "resource binding (COGNITO_RELAX_OAUTH_RESOURCE_MISMATCH). Prefer aligning MCP_BASE_URL "
+                "with the MCP URL your client uses.",
                 client_resource,
                 server_resource,
             )
@@ -206,12 +210,22 @@ class _PlaneCognitoProvider(AWSCognitoProvider):
         )
 
 
+def cognito_http_env_missing() -> list[str]:
+    """Return required Cognito env var names that are missing or blank."""
+    return [name for name in REQUIRED_HTTP_ENV_VARS if not os.getenv(name, "").strip()]
+
+
+def cognito_http_configuration_intended() -> bool:
+    """True when Cognito pool/client id hints are set but env may be incomplete."""
+    return bool(os.getenv("COGNITO_USER_POOL_ID", "").strip() or os.getenv("OIDC_CLIENT_ID", "").strip())
+
+
 def cognito_http_env_ready() -> bool:
-    return all(os.getenv(name, "").strip() for name in REQUIRED_HTTP_ENV_VARS)
+    return not cognito_http_env_missing()
 
 
 def validate_cognito_http_env() -> None:
-    missing = [name for name in REQUIRED_HTTP_ENV_VARS if not os.getenv(name, "").strip()]
+    missing = cognito_http_env_missing()
     if missing:
         raise ValueError("http mode (Cognito) is missing required env vars: " + ", ".join(missing))
 
@@ -259,17 +273,22 @@ def _build_cognito_provider() -> AWSCognitoProvider:
         )
     else:
         logger.info("Cognito HTTP: MCP client redirect URI patterns: %s", redirect_patterns)
-    kwargs = dict(
+
+    jwt_signing_key = os.environ["MCP_JWT_SIGNING_KEY"].strip()
+    # FastMCP's AWSCognitoProvider requires non-empty client_secret; public Cognito apps
+    # use COGNITO_TOKEN_ENDPOINT_AUTH_METHOD=none so this value is not sent to Cognito.
+    kwargs: dict[str, Any] = dict(
         user_pool_id=os.environ["COGNITO_USER_POOL_ID"],
         aws_region=os.environ["COGNITO_AWS_REGION"],
         client_id=os.environ["OIDC_CLIENT_ID"],
-        client_secret=os.environ["OIDC_CLIENT_SECRET"],
+        client_secret=jwt_signing_key,
         base_url=base_url,
         redirect_path=redirect_path,
         required_scopes=["openid"],
         allowed_client_redirect_uris=redirect_patterns,
         client_storage=_oauth_client_storage(),
         require_authorization_consent=_consent_enabled(),
+        jwt_signing_key=jwt_signing_key,
     )
     provider = _PlaneCognitoProvider(**kwargs)
 
@@ -280,10 +299,9 @@ def _build_cognito_provider() -> AWSCognitoProvider:
     else:
         logger.info("Cognito HTTP: upstream PKCE off (default). Tools use Cognito access token as Plane Bearer.")
 
-    auth_meth = os.getenv("COGNITO_TOKEN_ENDPOINT_AUTH_METHOD", "").strip()
-    if auth_meth:
-        provider._token_endpoint_auth_method = auth_meth  # type: ignore[attr-defined]
-        logger.info("Cognito HTTP: COGNITO_TOKEN_ENDPOINT_AUTH_METHOD=%s", auth_meth)
+    auth_meth = os.getenv("COGNITO_TOKEN_ENDPOINT_AUTH_METHOD", "none").strip() or "none"
+    provider._token_endpoint_auth_method = auth_meth  # type: ignore[attr-defined]
+    logger.info("Cognito HTTP: public Cognito app client; token endpoint client authentication: %s", auth_meth)
 
     return provider
 

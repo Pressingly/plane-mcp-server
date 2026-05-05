@@ -37,6 +37,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         fields: str | None = None,
         external_id: str | None = None,
         external_source: str | None = None,
+        workspace_slug: str | None = None,
     ) -> dict[str, Any]:
         """
         List work items in a project with optional PQL filtering.
@@ -57,13 +58,17 @@ def register_work_item_tools(mcp: FastMCP) -> None:
                 created_at, updated_at, created_by, is_draft. Use `project` not
                 `project_id`.
             external_id / external_source: Filter by external system.
+            workspace_slug: Target workspace slug (e.g. from list_workspaces). Required when
+                the MCP session has no default (no ``PLANE_WORKSPACE_SLUG``, no PAT
+                ``X-Workspace-Slug``). Omitting it with only browser/OAuth auth yields empty
+                slug paths and Plane 404s. When set, overrides env and token claims.
         Returns:
             results: Paginated list of work items.
             total_count: True DB total, not page-bounded — use for counts.
             next_cursor: Cursor for the next page.
             prev_cursor: Cursor for the previous page.
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         params = WorkItemQueryParams(
             pql=pql,
@@ -117,7 +122,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         """
         List work items across all projects with optional PQL filtering.
 
-        Spans every project the caller can view. 
+        Spans every project the caller can view.
         Use project= UUID in PQL to scope to one project.
         For single-project filtering use list_work_items instead.
 
@@ -194,12 +199,14 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         state: str | None = None,
         estimate_point: str | None = None,
         type: str | None = None,
+        workspace_slug: str | None = None,
     ) -> WorkItem:
         """
         Create a new work item.
 
         Args:
             project_id: UUID of the project
+            workspace_slug: Optional; overrides default workspace for this call
             name: Work item name (required)
             assignees: List of user IDs to assign to the work item
             labels: List of label IDs to attach to the work item
@@ -222,7 +229,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         Returns:
             Created WorkItem object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         validated_priority: PriorityEnum | None = (
             priority if priority in get_args(PriorityEnum) else None  # type: ignore[assignment]
@@ -260,12 +267,14 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         external_id: str | None = None,
         external_source: str | None = None,
         order_by: str | None = None,
+        workspace_slug: str | None = None,
     ) -> WorkItemDetail:
         """
         Retrieve a work item by ID.
 
         Args:
             project_id: UUID of the project
+            workspace_slug: Optional; overrides default workspace for this call
             work_item_id: UUID of the work item
             expand: Comma-separated fields to expand (e.g., "assignees,labels,state")
             fields: Comma-separated fields to include in response
@@ -276,7 +285,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         Returns:
             WorkItemDetail object with expanded relationships
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         params = RetrieveQueryParams(
             expand=expand,
@@ -301,6 +310,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         external_id: str | None = None,
         external_source: str | None = None,
         order_by: str | None = None,
+        workspace_slug: str | None = None,
     ) -> WorkItemDetail:
         """
         Retrieve a work item by its full identifier (project prefix + sequence number).
@@ -320,6 +330,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
 
         Args:
             work_item_identifier: Full work item identifier in PROJECT-N format
+            workspace_slug: Optional; overrides default workspace for this call
             expand: Comma-separated fields to expand (e.g., "assignees,labels,state")
             fields: Comma-separated sparse fieldset (see valid values above)
             external_id: External system identifier for filtering
@@ -336,7 +347,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
                 "Expected PROJECT-N format where N is the sequence number."
             )
         project_identifier, sequence_str = parts
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         params = RetrieveQueryParams(
             expand=expand,
@@ -375,12 +386,14 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         state: str | None = None,
         estimate_point: str | None = None,
         type: str | None = None,
+        workspace_slug: str | None = None,
     ) -> WorkItem:
         """
         Update a work item by ID.
 
         Args:
             project_id: UUID of the project
+            workspace_slug: Optional; overrides default workspace for this call
             work_item_id: UUID of the work item
             name: Work item name
             assignees: List of user IDs to assign to the work item
@@ -404,7 +417,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         Returns:
             Updated WorkItem object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         validated_priority: PriorityEnum | None = (
             priority if priority in get_args(PriorityEnum) else None  # type: ignore[assignment]
@@ -439,15 +452,16 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         )
 
     @mcp.tool()
-    def delete_work_item(project_id: str, work_item_id: str) -> None:
+    def delete_work_item(project_id: str, work_item_id: str, workspace_slug: str | None = None) -> None:
         """
         Delete a work item by ID.
 
         Args:
             project_id: UUID of the project
             work_item_id: UUID of the work item
+            workspace_slug: Optional; overrides default workspace for this call
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.work_items.delete(workspace_slug=workspace_slug, project_id=project_id, work_item_id=work_item_id)
 
     @mcp.tool()
@@ -672,6 +686,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         external_id: str | None = None,
         external_source: str | None = None,
         order_by: str | None = None,
+        workspace_slug: str | None = None,
     ) -> WorkItemSearch:
         """
         Search work items by text across a workspace.
@@ -682,6 +697,8 @@ def register_work_item_tools(mcp: FastMCP) -> None:
 
         Args:
             query: Free-text search string across work item name and description
+            workspace_slug: Target workspace slug (e.g. from list_workspaces). Required when
+                the MCP session has no default slug (same rules as list_work_items).
             expand: Comma-separated list of related fields to expand in response
             fields: Comma-separated list of fields to include in response
             external_id: External system identifier for filtering
@@ -691,7 +708,7 @@ def register_work_item_tools(mcp: FastMCP) -> None:
         Returns:
             WorkItemSearch object containing search results
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         params = RetrieveQueryParams(
             expand=expand,

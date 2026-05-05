@@ -17,12 +17,7 @@ logger = get_logger(__name__)
 
 
 class Workspace(BaseModel):
-    """Plane workspace summary returned from ``GET /api/v1/workspaces/``.
-
-    Pressingly Plane (and upstream Plane) include other fields (logo, organization size,
-    timestamps, etc.); ``extra="allow"`` keeps them on the model so tool consumers can
-    still inspect everything without a schema mismatch breaking the call.
-    """
+    """Workspace row from ``GET /api/users/me/workspaces/`` (shape varies; extra fields allowed)."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -91,7 +86,7 @@ def register_workspace_tools(mcp: FastMCP) -> None:
         slug, so this tool exists to bootstrap that slug.
 
         Use a returned ``slug`` to set ``PLANE_WORKSPACE_SLUG`` (or send
-        ``X-Workspace-slug``) before calling workspace-scoped tools.
+        ``X-Workspace-slug`` on PAT) before calling workspace-scoped tools.
 
         Returns:
             List of Workspace objects (id, name, slug, owner, plus any extra fields).
@@ -107,25 +102,31 @@ def register_workspace_tools(mcp: FastMCP) -> None:
         return [Workspace.model_validate(item) for item in items]
 
     @mcp.tool()
-    def get_workspace_members() -> list[UserLite]:
+    def get_workspace_members(workspace_slug: str | None = None) -> list[UserLite]:
         """
         Get all members of the current workspace.
+
+        Args:
+            workspace_slug: Optional; overrides default workspace for this call
 
         Returns:
             List of UserLite objects representing workspace members
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.workspaces.get_members(workspace_slug=workspace_slug)
 
     @mcp.tool()
-    def get_workspace_features() -> WorkspaceFeature:
+    def get_workspace_features(workspace_slug: str | None = None) -> WorkspaceFeature:
         """
         Get features of the current workspace.
+
+        Args:
+            workspace_slug: Optional; overrides default workspace for this call
 
         Returns:
             WorkspaceFeature object containing feature flags
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.workspaces.get_features(workspace_slug=workspace_slug)
 
     @mcp.tool()
@@ -136,6 +137,7 @@ def register_workspace_tools(mcp: FastMCP) -> None:
         customers: bool | None = None,
         wiki: bool | None = None,
         pi: bool | None = None,
+        workspace_slug: str | None = None,
     ) -> WorkspaceFeature:
         """
         Update features of the current workspace.
@@ -147,11 +149,12 @@ def register_workspace_tools(mcp: FastMCP) -> None:
             customers: Enable/disable customers feature
             wiki: Enable/disable wiki feature
             pi: Enable/disable PI (Program Increment) feature
+            workspace_slug: Optional; overrides default workspace for this call
 
         Returns:
             Updated WorkspaceFeature object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Build data dict with only non-None values
         feature_data: dict[str, bool] = {}

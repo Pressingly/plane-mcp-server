@@ -121,6 +121,7 @@ def register_page_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def retrieve_workspace_page(
         page_id: str,
+        workspace_slug: str | None = None,
     ) -> Page:
         """
         Retrieve a workspace page by ID.
@@ -133,7 +134,7 @@ def register_page_tools(mcp: FastMCP) -> None:
         Returns:
             Page object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         return client.pages.retrieve_workspace_page(
             workspace_slug=workspace_slug,
@@ -144,6 +145,7 @@ def register_page_tools(mcp: FastMCP) -> None:
     def retrieve_project_page(
         project_id: str,
         page_id: str,
+        workspace_slug: str | None = None,
     ) -> Page:
         """
         Retrieve a project page by ID.
@@ -157,7 +159,7 @@ def register_page_tools(mcp: FastMCP) -> None:
         Returns:
             Page object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         return client.pages.retrieve_project_page(
             workspace_slug=workspace_slug,
@@ -177,6 +179,7 @@ def register_page_tools(mcp: FastMCP) -> None:
         logo_props: dict[str, Any] | None = None,
         external_id: str | None = None,
         external_source: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Page:
         """
         Create a workspace page.
@@ -196,7 +199,7 @@ def register_page_tools(mcp: FastMCP) -> None:
         Returns:
             Created Page object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         data = CreatePage(
             name=name,
@@ -229,6 +232,7 @@ def register_page_tools(mcp: FastMCP) -> None:
         logo_props: dict[str, Any] | None = None,
         external_id: str | None = None,
         external_source: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Page:
         """
         Create a project page.
@@ -249,7 +253,7 @@ def register_page_tools(mcp: FastMCP) -> None:
         Returns:
             Created Page object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         data = CreatePage(
             name=name,

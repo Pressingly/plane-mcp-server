@@ -7,6 +7,7 @@ from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.utilities.logging import get_logger
 from plane import PlaneClient
+from plane.errors import ConfigurationError
 
 logger = get_logger(__name__)
 
@@ -19,66 +20,62 @@ class PlaneClientContext(NamedTuple):
 
 
 def _plane_bearer_for(token: str, claims: dict[str, Any] | None) -> str:
-    """Pick the Cognito JWT to forward to Plane: ID token if available, else access token.
+    """Use Cognito ID token for Plane when present on the MCP session (oauth2-proxy ``cognito:username``).
 
-    oauth2-proxy in this stack uses ``--user-id-claim=cognito:username`` (set so the web
-    cookie flow, which presents the **ID** token, resolves the right user). Cognito
-    **access** tokens have only ``username`` (no ``cognito:`` prefix) and no ``email``
-    claim, so forwarding the access token unchanged through Traefik+oauth2-proxy makes
-    oauth2-proxy fall back to ``sub`` and Plane's ``ProxyAuthMiddleware`` resolves a
-    different account than the web user.
-
-    The matching ID token is attached to ``AccessToken.claims["id_token"]`` by
-    :class:`plane_mcp.cognito_http._PlaneCognitoProvider.load_access_token`. It has the
-    same ``aud`` / signature as the access token, so oauth2-proxy validates it cleanly
-    and emits the right ``X-Auth-Request-User`` — same trust chain as the web flow,
-    no header injection, no internal-port bypass.
-
-    Falls back to ``token`` when no ID token is attached (e.g., header API-key auth,
-    legacy stdio mode); local PAT setups still work in that case.
+    The ID token is attached to ``AccessToken.claims`` by ``plane_mcp.cognito_http`` when
+    available. Otherwise returns ``token`` (Plane OAuth, PAT, stdio).
     """
     id_token = (claims or {}).get("id_token")
     if isinstance(id_token, str) and id_token:
+        logger.info("Plane bearer: forwarding upstream Cognito id_token (len=%d)", len(id_token))
         return id_token
+    logger.warning(
+        "Plane bearer: no id_token in claims (keys=%s) — forwarding access token (oauth2-proxy may reject it)",
+        list((claims or {}).keys()),
+    )
     return token
 
 
-def get_plane_client_context() -> PlaneClientContext:
+def get_plane_client_context(workspace_slug_from_client: str | None = None) -> PlaneClientContext:
     """
     Initialize and return a PlaneClient instance with workspace context.
 
     Authentication is handled by the PlaneOAuthProvider, which supports:
     1. Environment variables (PLANE_API_KEY + PLANE_WORKSPACE_SLUG)
     2. HTTP headers (x-api-key + x-workspace-slug)
-    3. OAuth access token (Cognito browser flow — swapped for the matching ID token
-       so oauth2-proxy can resolve the user via ``cognito:username``)
+    3. OAuth access token
+
+    Workspace slug: if ``workspace_slug_from_client`` is set, it wins; otherwise
+    token ``claims['workspace_slug']`` (e.g. PAT header), then ``PLANE_WORKSPACE_SLUG``.
 
     Environment variables:
-    - PLANE_INTERNAL_BASE_URL: Internal URL for Plane API (skips Traefik+oauth2-proxy;
-      only safe inside the same trust boundary, e.g. local dev with PAT auth).
-    - PLANE_BASE_URL: Public Plane URL fronted by Traefik+oauth2-proxy (default for
-      Cognito browser auth so all calls go through the same chain as the web UI).
+    - PLANE_INTERNAL_BASE_URL: Internal URL for Plane API (preferred for server-to-server calls)
+    - PLANE_BASE_URL: Base URL for Plane API (fallback, default: https://api.plane.so)
 
     Returns:
         PlaneClientContext containing configured PlaneClient instance and workspace slug
 
     Raises:
-        ConfigurationError: If access token is not available or workspace slug is missing
+        ConfigurationError: If the resolved workspace slug is empty (would produce invalid
+            ``/api/v1/workspaces/work-items/...`` URLs and Plane 404s).
     """
     base_url = os.getenv("PLANE_INTERNAL_BASE_URL") or os.getenv("PLANE_BASE_URL", "https://api.plane.so")
     workspace_slug = os.getenv("PLANE_WORKSPACE_SLUG", "")
 
     api_key = os.getenv("PLANE_API_KEY", "")
-    access_token: str | None = None
+    access_token = None
 
+    # Get access token from the OAuth provider (which handles all auth methods)
     stored_access_token: AccessToken | None = get_access_token()
     if stored_access_token:
+        # Determine authentication method to use appropriate PlaneClient constructor
         auth_method = stored_access_token.claims.get("auth_method", "oauth")
         token = stored_access_token.token
         claim_workspace = stored_access_token.claims.get("workspace_slug", "")
         if claim_workspace:
             workspace_slug = claim_workspace
 
+        # For API key auth methods, use api_key parameter; for OAuth, use access_token
         if auth_method in ("api_key_env", "api_key_header"):
             api_key = token
         else:
@@ -95,7 +92,19 @@ def get_plane_client_context() -> PlaneClientContext:
             api_key=api_key,
         )
 
+    slug = (workspace_slug or "").strip()
+    if workspace_slug_from_client and str(workspace_slug_from_client).strip():
+        slug = str(workspace_slug_from_client).strip()
+
+    if not slug:
+        raise ConfigurationError(
+            "Workspace slug is required for Plane API calls but none was resolved. "
+            "Pass workspace_slug on the tool (use list_workspaces to get the slug, e.g. 'arbisofttt'), "
+            "set PLANE_WORKSPACE_SLUG for stdio, or authenticate with PAT and header X-Workspace-Slug. "
+            "Without a slug, URLs look like /api/v1/workspaces/work-items/... and Plane returns 404."
+        )
+
     return PlaneClientContext(
         client=client,
-        workspace_slug=workspace_slug,
+        workspace_slug=slug,
     )
