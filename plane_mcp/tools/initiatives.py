@@ -20,6 +20,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def list_initiatives(
         params: dict[str, Any] | None = None,
+        workspace_slug: str | None = None,
     ) -> list[Initiative]:
         """
         List all initiatives in a workspace.
@@ -31,7 +32,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
         Returns:
             List of Initiative objects
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         response: PaginatedInitiativeResponse = client.initiatives.list(workspace_slug=workspace_slug, params=params)
         return response.results
 
@@ -44,6 +45,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
         logo_props: dict | None = None,
         state: InitiativeState | str | None = None,
         lead: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Initiative:
         """
         Create a new initiative in the workspace.
@@ -61,7 +63,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
         Returns:
             Created Initiative object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         data = CreateInitiative(
             name=name,
@@ -76,7 +78,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
         return client.initiatives.create(workspace_slug=workspace_slug, data=data)
 
     @mcp.tool()
-    def retrieve_initiative(initiative_id: str) -> Initiative:
+    def retrieve_initiative(initiative_id: str, workspace_slug: str | None = None) -> Initiative:
         """
         Retrieve an initiative by ID.
 
@@ -87,7 +89,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
         Returns:
             Initiative object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.initiatives.retrieve(workspace_slug=workspace_slug, initiative_id=initiative_id)
 
     @mcp.tool()
@@ -100,6 +102,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
         logo_props: dict | None = None,
         state: InitiativeState | str | None = None,
         lead: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Initiative:
         """
         Update an initiative by ID.
@@ -118,7 +121,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
         Returns:
             Updated Initiative object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         data = UpdateInitiative(
             name=name,
@@ -133,7 +136,7 @@ def register_initiative_tools(mcp: FastMCP) -> None:
         return client.initiatives.update(workspace_slug=workspace_slug, initiative_id=initiative_id, data=data)
 
     @mcp.tool()
-    def delete_initiative(initiative_id: str) -> None:
+    def delete_initiative(initiative_id: str, workspace_slug: str | None = None) -> None:
         """
         Delete an initiative by ID.
 
@@ -141,5 +144,5 @@ def register_initiative_tools(mcp: FastMCP) -> None:
             workspace_slug: The workspace slug identifier
             initiative_id: UUID of the initiative
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.initiatives.delete(workspace_slug=workspace_slug, initiative_id=initiative_id)

@@ -1,13 +1,18 @@
 """Cognito HTTP callback URL resolution."""
 
+import sys
+
 import pytest
 
 from plane_mcp.cognito_http import (
     REQUIRED_HTTP_ENV_VARS,
     _allowed_client_redirect_uris,
     _cognito_callback_base_and_path,
+    cognito_http_configuration_intended,
+    cognito_http_env_missing,
     cognito_http_env_ready,
     cognito_idp_redirect_uri,
+    validate_cognito_http_env,
 )
 
 
@@ -59,6 +64,44 @@ def test_allowed_client_redirect_uris_none_when_unset(clear_cognito_env, monkeyp
 def test_allowed_client_redirect_uris_when_set(monkeypatch):
     monkeypatch.setenv("MCP_ALLOWED_CLIENT_REDIRECT_URIS", "cursor://*,http://localhost:*/*")
     assert _allowed_client_redirect_uris() == ["cursor://*", "http://localhost:*/*"]
+
+
+def test_cognito_http_configuration_intended(monkeypatch):
+    monkeypatch.delenv("COGNITO_USER_POOL_ID", raising=False)
+    monkeypatch.delenv("OIDC_CLIENT_ID", raising=False)
+    assert cognito_http_configuration_intended() is False
+    monkeypatch.setenv("COGNITO_USER_POOL_ID", "pool")
+    assert cognito_http_configuration_intended() is True
+    monkeypatch.delenv("COGNITO_USER_POOL_ID", raising=False)
+    monkeypatch.setenv("OIDC_CLIENT_ID", "cid")
+    assert cognito_http_configuration_intended() is True
+
+
+def test_cognito_http_env_missing_lists_blank_vars(monkeypatch):
+    for name in REQUIRED_HTTP_ENV_VARS:
+        monkeypatch.setenv(name, "x")
+    assert cognito_http_env_missing() == []
+    monkeypatch.setenv("MCP_JWT_SIGNING_KEY", "")
+    assert "MCP_JWT_SIGNING_KEY" in cognito_http_env_missing()
+
+
+def test_validate_cognito_http_env_succeeds_when_required_set(monkeypatch):
+    for name in REQUIRED_HTTP_ENV_VARS:
+        monkeypatch.setenv(name, "x")
+    validate_cognito_http_env()
+
+
+def test_http_main_raises_clear_error_when_cognito_partial(monkeypatch):
+    monkeypatch.delenv("MCP_BASE_URL", raising=False)
+    monkeypatch.delenv("COGNITO_AWS_REGION", raising=False)
+    monkeypatch.delenv("OIDC_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MCP_JWT_SIGNING_KEY", raising=False)
+    monkeypatch.setenv("COGNITO_USER_POOL_ID", "test-pool")
+    monkeypatch.setattr(sys, "argv", ["plane_mcp", "http"])
+    import plane_mcp.__main__ as entry
+
+    with pytest.raises(ValueError, match="Cognito is partially configured"):
+        entry.main()
 
 
 def test_cognito_idp_redirect_legacy_alias(monkeypatch):

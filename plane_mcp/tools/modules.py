@@ -24,6 +24,7 @@ def register_module_tools(mcp: FastMCP) -> None:
     def list_modules(
         project_id: str,
         params: dict[str, Any] | None = None,
+        workspace_slug: str | None = None,
     ) -> list[Module]:
         """
         List all modules in a project.
@@ -36,7 +37,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         Returns:
             List of Module objects
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         response: PaginatedModuleResponse = client.modules.list(
             workspace_slug=workspace_slug, project_id=project_id, params=params
         )
@@ -54,6 +55,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         members: list[str] | None = None,
         external_source: str | None = None,
         external_id: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Module:
         """
         Create a new module.
@@ -74,7 +76,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         Returns:
             Created Module object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Validate status against allowed literal values
         validated_status: ModuleStatusEnum | None = (
@@ -96,7 +98,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         return client.modules.create(workspace_slug=workspace_slug, project_id=project_id, data=data)
 
     @mcp.tool()
-    def retrieve_module(project_id: str, module_id: str) -> Module:
+    def retrieve_module(project_id: str, module_id: str, workspace_slug: str | None = None) -> Module:
         """
         Retrieve a module by ID.
 
@@ -108,7 +110,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         Returns:
             Module object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.modules.retrieve(workspace_slug=workspace_slug, project_id=project_id, module_id=module_id)
 
     @mcp.tool()
@@ -124,6 +126,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         members: list[str] | None = None,
         external_source: str | None = None,
         external_id: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Module:
         """
         Update a module by ID.
@@ -145,7 +148,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         Returns:
             Updated Module object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Validate status against allowed literal values
         validated_status: ModuleStatusEnum | None = (
@@ -169,7 +172,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         )
 
     @mcp.tool()
-    def delete_module(project_id: str, module_id: str) -> None:
+    def delete_module(project_id: str, module_id: str, workspace_slug: str | None = None) -> None:
         """
         Delete a module by ID.
 
@@ -178,13 +181,14 @@ def register_module_tools(mcp: FastMCP) -> None:
             project_id: UUID of the project
             module_id: UUID of the module
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.modules.delete(workspace_slug=workspace_slug, project_id=project_id, module_id=module_id)
 
     @mcp.tool()
     def list_archived_modules(
         project_id: str,
         params: dict[str, Any] | None = None,
+        workspace_slug: str | None = None,
     ) -> list[Module]:
         """
         List archived modules in a project.
@@ -197,7 +201,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         Returns:
             List of archived Module objects
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         response: PaginatedArchivedModuleResponse = client.modules.list_archived(
             workspace_slug=workspace_slug, project_id=project_id, params=params
         )
@@ -208,6 +212,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         project_id: str,
         module_id: str,
         issue_ids: list[str],
+        workspace_slug: str | None = None,
     ) -> None:
         """
         Add work items to a module.
@@ -218,7 +223,7 @@ def register_module_tools(mcp: FastMCP) -> None:
             module_id: UUID of the module
             issue_ids: List of work item IDs to add to the module
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.modules.add_work_items(
             workspace_slug=workspace_slug,
             project_id=project_id,
@@ -231,6 +236,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         project_id: str,
         module_id: str,
         work_item_id: str,
+        workspace_slug: str | None = None,
     ) -> None:
         """
         Remove a work item from a module.
@@ -241,7 +247,7 @@ def register_module_tools(mcp: FastMCP) -> None:
             module_id: UUID of the module
             work_item_id: UUID of the work item to remove
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.modules.remove_work_item(
             workspace_slug=workspace_slug,
             project_id=project_id,
@@ -254,6 +260,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         project_id: str,
         module_id: str,
         params: dict[str, Any] | None = None,
+        workspace_slug: str | None = None,
     ) -> list[WorkItem]:
         """
         List work items in a module.
@@ -267,7 +274,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         Returns:
             List of WorkItem objects in the module
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         response: PaginatedModuleWorkItemResponse = client.modules.list_work_items(
             workspace_slug=workspace_slug,
             project_id=project_id,
@@ -277,7 +284,7 @@ def register_module_tools(mcp: FastMCP) -> None:
         return response.results
 
     @mcp.tool()
-    def archive_module(project_id: str, module_id: str) -> None:
+    def archive_module(project_id: str, module_id: str, workspace_slug: str | None = None) -> None:
         """
         Archive a module.
 
@@ -286,11 +293,11 @@ def register_module_tools(mcp: FastMCP) -> None:
             project_id: UUID of the project
             module_id: UUID of the module
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.modules.archive(workspace_slug=workspace_slug, project_id=project_id, module_id=module_id)
 
     @mcp.tool()
-    def unarchive_module(project_id: str, module_id: str) -> None:
+    def unarchive_module(project_id: str, module_id: str, workspace_slug: str | None = None) -> None:
         """
         Unarchive a module.
 
@@ -299,5 +306,5 @@ def register_module_tools(mcp: FastMCP) -> None:
             project_id: UUID of the project
             module_id: UUID of the module
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.modules.unarchive(workspace_slug=workspace_slug, project_id=project_id, module_id=module_id)
