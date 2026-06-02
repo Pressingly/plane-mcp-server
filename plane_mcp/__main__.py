@@ -15,9 +15,7 @@ from starlette.routing import Mount
 
 from plane_mcp.cognito_http import (
     build_cognito_http_starlette_app,
-    cognito_http_configuration_intended,
     cognito_http_env_missing,
-    cognito_http_env_ready,
 )
 from plane_mcp.server import get_header_mcp, get_oauth_mcp, get_stdio_mcp
 
@@ -95,9 +93,18 @@ def main() -> None:
     if server_mode == ServerMode.HTTP:
 
         prefix = os.getenv("MCP_PATH_PREFIX") or ""
+        auth_type = os.getenv("AUTH_TYPE", "").strip().upper()
 
-        oauth_mcp = get_oauth_mcp(prefix + "/http")
-        if cognito_http_env_ready():
+        if auth_type == "SSO":
+            missing = cognito_http_env_missing()
+            if missing:
+                raise ValueError(
+                    "AUTH_TYPE=SSO requires Cognito env vars but these are missing or empty: "
+                    f"{', '.join(missing)}. "
+                    "Set all of: MCP_BASE_URL, COGNITO_USER_POOL_ID, COGNITO_AWS_REGION, OIDC_CLIENT_ID, "
+                    "MCP_JWT_SIGNING_KEY, MCP_ALLOWED_CLIENT_REDIRECT_URIS."
+                )
+
             app = build_cognito_http_starlette_app()
             for uv_logger_name in ("uvicorn", "uvicorn.error"):
                 uv_logger = logging.getLogger(uv_logger_name)
@@ -108,7 +115,7 @@ def main() -> None:
                 uv_logger.addHandler(uv_handler)
 
             logger.info(
-                "Starting Cognito HTTP server: /mcp, /http/api-key/mcp, GET /healthz (set Cognito env vars per README)"
+                "Starting Cognito HTTP server (AUTH_TYPE=SSO): /mcp, /http/api-key/mcp, GET /healthz"
             )
             uvicorn.run(
                 app,
@@ -118,17 +125,6 @@ def main() -> None:
                 access_log=False,
             )
             return
-
-        if cognito_http_configuration_intended():
-            missing = cognito_http_env_missing()
-            raise ValueError(
-                "HTTP mode: Cognito is partially configured (COGNITO_USER_POOL_ID and/or OIDC_CLIENT_ID set) "
-                f"but required variables are missing or empty: {', '.join(missing)}. "
-                "Set all of: MCP_BASE_URL, COGNITO_USER_POOL_ID, COGNITO_AWS_REGION, OIDC_CLIENT_ID, "
-                "MCP_JWT_SIGNING_KEY, MCP_ALLOWED_CLIENT_REDIRECT_URIS. "
-                "To use Plane OAuth at /http/mcp instead, unset COGNITO_USER_POOL_ID and OIDC_CLIENT_ID and set "
-                "PLANE_OAUTH_PROVIDER_CLIENT_ID and PLANE_OAUTH_PROVIDER_CLIENT_SECRET."
-            )
 
         oauth_mcp = get_oauth_mcp("/http")
         oauth_app = oauth_mcp.http_app(stateless_http=True)

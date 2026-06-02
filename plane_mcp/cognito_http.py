@@ -1,6 +1,6 @@
 """AWS Cognito browser OAuth for streamable HTTP MCP (see README, "HTTP with AWS Cognito").
 
-When ``cognito_http_env_ready()`` is true, ``python -m plane_mcp http`` serves MCP at
+When ``AUTH_TYPE=SSO``, ``python -m plane_mcp http`` serves MCP at
 ``{MCP_BASE_URL}/mcp`` using a public Cognito app client and ``MCP_JWT_SIGNING_KEY``.
 
 ``get_plane_client_context`` forwards the Cognito **ID token** to Plane when it is attached
@@ -16,7 +16,6 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any, cast
-from urllib.parse import urlparse
 
 from fastmcp import FastMCP
 from fastmcp.server.auth.auth import AccessToken
@@ -55,36 +54,8 @@ _DEFAULT_CALLBACK_PATH = "/auth/callback"
 
 def _cognito_callback_base_and_path() -> tuple[str, str]:
     """Return ``(base_url, redirect_path)`` for Cognito ``redirect_uri`` (authorize + token)."""
-    raw = os.getenv("MCP_COGNITO_REDIRECT_URI", "").strip() or os.getenv("PLANE_MCP_COGNITO_REDIRECT_URI", "").strip()
-    if raw:
-        p = urlparse(raw)
-        if p.scheme not in ("http", "https") or not p.netloc:
-            raise ValueError("MCP_COGNITO_REDIRECT_URI must be an absolute http(s) URL without query or fragment")
-        if p.query or p.fragment:
-            raise ValueError("MCP_COGNITO_REDIRECT_URI must not include query or fragment")
-        path = p.path or _DEFAULT_CALLBACK_PATH
-        if not path.startswith("/"):
-            path = "/" + path
-        path = path.rstrip("/") or "/"
-        if path == "/":
-            raise ValueError("MCP_COGNITO_REDIRECT_URI must include a path (e.g. /auth/callback)")
-        base = f"{p.scheme}://{p.netloc}".rstrip("/")
-        mcp = os.environ.get("MCP_BASE_URL", "").strip().rstrip("/")
-        if mcp and mcp != base:
-            logger.warning(
-                "MCP_COGNITO_REDIRECT_URI host %s differs from MCP_BASE_URL %s — Cognito uses the redirect URI only",
-                base,
-                mcp,
-            )
-        return base, path
     base = os.environ["MCP_BASE_URL"].strip().rstrip("/")
     return base, _DEFAULT_CALLBACK_PATH
-
-
-def cognito_idp_redirect_uri() -> str:
-    """Exact IdP callback URL sent to Cognito (for logs, Cognito console, tests)."""
-    b, path = _cognito_callback_base_and_path()
-    return f"{b}{path}"
 
 
 class _AWSCognitoTokenVerifierUsernameFallback(AWSCognitoTokenVerifier):
@@ -156,33 +127,10 @@ class _PlaneCognitoProvider(AWSCognitoProvider):
             return None
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
-        """Allow MCP clients whose ``resource`` URL does not match ``MCP_BASE_URL`` (e.g. localhost vs Traefik).
-
-        FastMCP rejects mismatched ``resource`` with ``invalid_target`` before any redirect — Cursor often
-        sends ``http://127.0.0.1:<port>/mcp`` while ``MCP_BASE_URL`` is ``https://foss-pm-mcp...``.
-        Clear ``resource`` so consent/upstream Cognito flow runs; upstream authorize drops ``resource`` anyway.
-        Set ``COGNITO_RELAX_OAUTH_RESOURCE_MISMATCH=false`` to enforce strict binding.
-        """
-        relax = os.getenv("COGNITO_RELAX_OAUTH_RESOURCE_MISMATCH", "true").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-        )
+        """Clear mismatched ``resource`` so Cursor (http://127.0.0.1:<port>) works against a remote MCP_BASE_URL."""
         server_resource = getattr(self, "_resource_url", None)
         client_resource = getattr(params, "resource", None)
-        if (
-            relax
-            and client_resource is not None
-            and server_resource is not None
-            and str(client_resource) != str(server_resource)
-        ):
-            logger.warning(
-                "Cognito OAuth: client resource %s != server MCP resource %s; continuing without "
-                "resource binding (COGNITO_RELAX_OAUTH_RESOURCE_MISMATCH). Prefer aligning MCP_BASE_URL "
-                "with the MCP URL your client uses.",
-                client_resource,
-                server_resource,
-            )
+        if client_resource is not None and server_resource is not None and str(client_resource) != str(server_resource):
             params = params.model_copy(update={"resource": None})
         return await super().authorize(client, params)
 
@@ -216,15 +164,6 @@ class _PlaneCognitoProvider(AWSCognitoProvider):
 def cognito_http_env_missing() -> list[str]:
     """Return required Cognito env var names that are missing or blank."""
     return [name for name in REQUIRED_HTTP_ENV_VARS if not os.getenv(name, "").strip()]
-
-
-def cognito_http_configuration_intended() -> bool:
-    """True when Cognito pool/client id hints are set but env may be incomplete."""
-    return bool(os.getenv("COGNITO_USER_POOL_ID", "").strip() or os.getenv("OIDC_CLIENT_ID", "").strip())
-
-
-def cognito_http_env_ready() -> bool:
-    return not cognito_http_env_missing()
 
 
 def validate_cognito_http_env() -> None:
@@ -266,11 +205,6 @@ def _oauth_client_storage() -> MemoryStore | RedisStore:
     return _oauth_kv_singleton
 
 
-def _consent_enabled() -> bool:
-    v = os.getenv("COGNITO_REQUIRE_CONSENT", "true").strip().lower()
-    return v not in ("0", "false", "no")
-
-
 def _build_cognito_provider() -> AWSCognitoProvider:
     validate_cognito_http_env()
     base_url, redirect_path = _cognito_callback_base_and_path()
@@ -290,26 +224,12 @@ def _build_cognito_provider() -> AWSCognitoProvider:
         required_scopes=["openid"],
         allowed_client_redirect_uris=redirect_patterns,
         client_storage=_oauth_client_storage(),
-        require_authorization_consent=_consent_enabled(),
+        require_authorization_consent=True,
         jwt_signing_key=jwt_signing_key,
     )
     provider = _PlaneCognitoProvider(**kwargs)
-
-    forward_pkce = os.getenv("COGNITO_OIDC_FORWARD_PKCE", "false").strip().lower() in ("1", "true", "yes")
-    provider._forward_pkce = forward_pkce  # type: ignore[attr-defined]
-    if forward_pkce:
-        logger.info("Cognito HTTP: COGNITO_OIDC_FORWARD_PKCE=true (PKCE sent to Cognito authorize/token)")
-    else:
-        logger.info(
-            "Cognito HTTP: upstream PKCE off (default). Plane tools use Cognito ID token as "
-            "Bearer when attached to the session (see plane_mcp.client._plane_bearer_for); "
-            "otherwise the access token."
-        )
-
-    auth_meth = os.getenv("COGNITO_TOKEN_ENDPOINT_AUTH_METHOD", "none").strip() or "none"
-    provider._token_endpoint_auth_method = auth_meth  # type: ignore[attr-defined]
-    logger.info("Cognito HTTP: public Cognito app client; token endpoint client authentication: %s", auth_meth)
-
+    provider._forward_pkce = False  # type: ignore[attr-defined]
+    provider._token_endpoint_auth_method = "none"  # type: ignore[attr-defined]
     return provider
 
 
@@ -358,7 +278,6 @@ def build_cognito_http_starlette_app() -> Starlette:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    cb = cognito_idp_redirect_uri()
     base = os.environ["MCP_BASE_URL"].strip().rstrip("/")
     logger.info(
         "Cognito HTTP: MCP %s/mcp; PAT %s/http/api-key/mcp; health %s/healthz",
@@ -366,5 +285,5 @@ def build_cognito_http_starlette_app() -> Starlette:
         base,
         base,
     )
-    logger.info("Cognito HTTP: register this exact Callback URL in Cognito: %s", cb)
+    logger.info("Cognito HTTP: register this exact Callback URL in Cognito: %s%s", base, _DEFAULT_CALLBACK_PATH)
     return app
