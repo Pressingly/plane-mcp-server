@@ -20,19 +20,15 @@ class PlaneClientContext(NamedTuple):
 
 
 def _plane_bearer_for(token: str, claims: dict[str, Any] | None) -> str:
-    """Use Cognito ID token for Plane when present on the MCP session (oauth2-proxy ``cognito:username``).
+    """Return the Cognito ID token from claims when present, otherwise the access token.
 
-    The ID token is attached to ``AccessToken.claims`` by ``plane_mcp.cognito_http`` when
-    available. Otherwise returns ``token`` (Plane OAuth, PAT, stdio).
+    Cognito ID tokens carry ``cognito:username`` which oauth2-proxy needs to match the
+    web cookie flow. Falls back to ``token`` for Plane OAuth / PAT / stdio paths.
     """
     id_token = (claims or {}).get("id_token")
     if isinstance(id_token, str) and id_token:
         logger.info("Plane bearer: forwarding upstream Cognito id_token (len=%d)", len(id_token))
         return id_token
-    logger.warning(
-        "Plane bearer: no id_token in claims (keys=%s) — forwarding access token (oauth2-proxy may reject it)",
-        list((claims or {}).keys()),
-    )
     return token
 
 
@@ -40,28 +36,10 @@ def get_plane_client_context(workspace_slug_from_client: str | None = None) -> P
     """
     Initialize and return a PlaneClient instance with workspace context.
 
-    Authentication is handled by the PlaneOAuthProvider, which supports:
-    1. Environment variables (PLANE_API_KEY + PLANE_WORKSPACE_SLUG)
-    2. HTTP headers (x-api-key + x-workspace-slug)
-    3. OAuth access token
-
-    Workspace slug: if ``workspace_slug_from_client`` is set, it wins; otherwise
-    token ``claims['workspace_slug']`` (e.g. PAT header), then ``PLANE_WORKSPACE_SLUG``.
-
-    Environment variables (Plane API host):
-    - PLANE_INTERNAL_BASE_URL: Optional internal origin for the Plane deployment. When set,
-      it is used ahead of PLANE_BASE_URL for **all** SDK calls in this process (OAuth and PAT).
-      For Cognito/browser flows that must match Traefik + oauth2-proxy like the web UI, leave it
-      unset and set only PLANE_BASE_URL to the public Plane URL.
-    - PLANE_BASE_URL: Plane deployment origin (fallback: https://api.plane.so). Used whenever
-      PLANE_INTERNAL_BASE_URL is unset.
-
-    Returns:
-        PlaneClientContext containing configured PlaneClient instance and workspace slug
+    Workspace slug precedence: ``workspace_slug_from_client`` > token claim > ``PLANE_WORKSPACE_SLUG``.
 
     Raises:
-        ConfigurationError: If the resolved workspace slug is empty (would produce invalid
-            ``/api/v1/workspaces/work-items/...`` URLs and Plane 404s).
+        ConfigurationError: If no workspace slug can be resolved.
     """
     base_url = os.getenv("PLANE_INTERNAL_BASE_URL") or os.getenv("PLANE_BASE_URL", "https://api.plane.so")
     workspace_slug = os.getenv("PLANE_WORKSPACE_SLUG", "")
@@ -96,9 +74,7 @@ def get_plane_client_context(workspace_slug_from_client: str | None = None) -> P
             api_key=api_key,
         )
 
-    slug = (workspace_slug or "").strip()
-    if workspace_slug_from_client and str(workspace_slug_from_client).strip():
-        slug = str(workspace_slug_from_client).strip()
+    slug = (workspace_slug_from_client or workspace_slug or "").strip()
 
     if not slug:
         raise ConfigurationError(
