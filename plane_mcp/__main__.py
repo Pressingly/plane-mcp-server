@@ -13,6 +13,10 @@ from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount
 
+from plane_mcp.cognito_http import (
+    build_cognito_http_starlette_app,
+    cognito_http_env_missing,
+)
 from plane_mcp.server import get_header_mcp, get_oauth_mcp, get_stdio_mcp
 
 
@@ -87,6 +91,38 @@ def main() -> None:
         return
 
     if server_mode == ServerMode.HTTP:
+        auth_type = os.getenv("AUTH_TYPE", "").strip().upper()
+
+        if auth_type == "SSO":
+            missing = cognito_http_env_missing()
+            if missing:
+                raise ValueError(
+                    "AUTH_TYPE=SSO requires Cognito env vars but these are missing or empty: "
+                    f"{', '.join(missing)}. "
+                    "Set all of: MCP_BASE_URL, COGNITO_USER_POOL_ID, COGNITO_AWS_REGION, OIDC_CLIENT_ID, "
+                    "MCP_JWT_SIGNING_KEY, MCP_ALLOWED_CLIENT_REDIRECT_URIS."
+                )
+            app = build_cognito_http_starlette_app()
+            for uv_logger_name in ("uvicorn", "uvicorn.error"):
+                uv_logger = logging.getLogger(uv_logger_name)
+                for h in uv_logger.handlers[:]:
+                    uv_logger.removeHandler(h)
+                uv_handler = logging.StreamHandler(sys.stderr)
+                uv_handler.setFormatter(JSONFormatter())
+                uv_logger.addHandler(uv_handler)
+
+            logger.info(
+                "Starting Cognito HTTP server (AUTH_TYPE=SSO): /mcp, /http/api-key/mcp, GET /healthz"
+            )
+            uvicorn.run(
+                app,
+                host="0.0.0.0",
+                port=8211,
+                log_level="info",
+                access_log=False,
+            )
+            return
+
         oauth_mcp = get_oauth_mcp("/http")
         oauth_app = oauth_mcp.http_app(stateless_http=True)
         header_app = get_header_mcp().http_app(stateless_http=True)

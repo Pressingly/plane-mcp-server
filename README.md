@@ -85,9 +85,29 @@ Connect to the hosted Plane MCP server using a Personal Access Token (PAT).
 }
 ```
 
-### 4. SSE Transport (Legacy)
+### 4. HTTP with AWS Cognito (self-hosted)
 
-⚠️ **Legacy Transport**: SSE (Server-Sent Events) transport is maintained for backward compatibility. New implementations should use the HTTP transport (sections 2 or 3) instead.
+When **all** of the following environment variables are set, `python -m plane_mcp http` runs the Cognito-backed HTTP app (`plane_mcp.cognito_http`) instead of the default Plane OAuth + SSE layout in the same process. Unset them if you need `/http/mcp` Plane OAuth and legacy SSE on `/`.
+
+| Endpoint | URL |
+|----------|-----|
+| Streamable HTTP (browser OAuth via Cognito) | `{MCP_BASE_URL}/mcp` |
+| PAT (same as non-Cognito HTTP) | `{MCP_BASE_URL}/http/api-key/mcp` |
+| Health check | `GET {MCP_BASE_URL}/healthz` |
+
+**Cognito app client:** use a **public** client (client ID only). Register **`{MCP_BASE_URL}/auth/callback`** as an allowed callback URL. Do not point MCP clients at `{MCP_BASE_URL}/http/mcp` in this mode.
+
+**Required:** `MCP_BASE_URL`, `COGNITO_USER_POOL_ID`, `COGNITO_AWS_REGION`, `OIDC_CLIENT_ID`, `MCP_JWT_SIGNING_KEY` (long random secret, e.g. `openssl rand -hex 32`), `MCP_ALLOWED_CLIENT_REDIRECT_URIS` (comma-separated fnmatch patterns for MCP client redirect URIs, e.g. `cursor://*,http://127.0.0.1:*/*`).
+
+**Optional:** `REDIS_HOST` / `REDIS_PORT`, `PLANE_BASE_URL` / `PLANE_INTERNAL_BASE_URL`, `PLANE_WORKSPACE_SLUG`.
+
+This build subclasses FastMCP’s Cognito provider to omit `resource` on the upstream authorize request when your pool has no resource server, optionally relax MCP `resource` vs `MCP_BASE_URL` mismatches, and attach the Cognito **ID token** to the MCP session when available so Plane’s gateway can resolve `cognito:username` the same way as the web UI (see `plane_mcp/client.py`).
+
+If `COGNITO_USER_POOL_ID` or `OIDC_CLIENT_ID` is set but any required variable is missing, HTTP mode fails with an explicit error instead of falling through to Plane OAuth.
+
+### 5. SSE Transport (Legacy)
+
+⚠️ **Legacy Transport**: SSE (Server-Sent Events) transport is maintained for backward compatibility. New implementations should use the HTTP transport (sections 2, 3, or 4) instead.
 
 Connect to the hosted Plane MCP server using OAuth authentication via Server-Sent Events.
 
@@ -332,6 +352,7 @@ The server provides comprehensive tools for interacting with Plane. All tools us
 
 | Tool Name | Description |
 |-----------|-------------|
+| `list_workspaces` | List Plane workspaces the authenticated user belongs to (slug bootstrap) |
 | `get_workspace_members` | Get all members of the current workspace |
 | `get_workspace_features` | Get features of the current workspace |
 | `update_workspace_features` | Update features of the current workspace |
@@ -342,7 +363,7 @@ The server provides comprehensive tools for interacting with Plane. All tools us
 |-----------|-------------|
 | `get_me` | Get current authenticated user information |
 
-**Total Tools**: 100+ tools across 20 categories
+**Tool coverage:** Sections above summarize the main tool surface. The authoritative list of registered modules is `plane_mcp/tools/__init__.py` (`register_tools`).
 
 ## Development
 

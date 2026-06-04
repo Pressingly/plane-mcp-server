@@ -23,6 +23,7 @@ def register_project_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def list_projects(
+        workspace_slug: str | None = None,
         cursor: str | None = None,
         per_page: int | None = None,
         expand: str | None = None,
@@ -33,7 +34,7 @@ def register_project_tools(mcp: FastMCP) -> None:
         List all projects in a workspace.
 
         Args:
-            workspace_slug: The workspace slug identifier
+            workspace_slug: Optional. When set, overrides ``PLANE_WORKSPACE_SLUG`` and token claims for this call.
             cursor: Pagination cursor for getting next set of results
             per_page: Number of results per page (1-100)
             expand: Comma-separated list of related fields to expand in response
@@ -43,7 +44,7 @@ def register_project_tools(mcp: FastMCP) -> None:
         Returns:
             List of Project objects
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         params = PaginatedQueryParams(
             cursor=cursor,
@@ -64,6 +65,7 @@ def register_project_tools(mcp: FastMCP) -> None:
     def create_project(
         name: str,
         identifier: str,
+        workspace_slug: str | None = None,
         description: str | None = None,
         project_lead: str | None = None,
         default_assignee: str | None = None,
@@ -86,9 +88,9 @@ def register_project_tools(mcp: FastMCP) -> None:
         Create a new project.
 
         Args:
-            workspace_slug: The workspace slug identifier
             name: Project name
             identifier: Project identifier (e.g., "MP" for "My Project")
+            workspace_slug: Optional; overrides default workspace for this call
             description: Project description
             project_lead: UUID of the project lead user
             default_assignee: UUID of the default assignee user
@@ -110,7 +112,7 @@ def register_project_tools(mcp: FastMCP) -> None:
         Returns:
             Created Project object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Validate timezone against allowed literal values
         validated_timezone: TimezoneEnum | None = (
@@ -142,18 +144,18 @@ def register_project_tools(mcp: FastMCP) -> None:
         return client.projects.create(workspace_slug=workspace_slug, data=data)
 
     @mcp.tool()
-    def retrieve_project(project_id: str) -> Project:
+    def retrieve_project(project_id: str, workspace_slug: str | None = None) -> Project:
         """
         Retrieve a project by ID.
 
         Args:
-            workspace_slug: The workspace slug identifier
             project_id: UUID of the project
+            workspace_slug: Optional; overrides default workspace for this call
 
         Returns:
             Project object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.projects.retrieve(workspace_slug=workspace_slug, project_id=project_id)
 
     @mcp.tool()
@@ -181,13 +183,14 @@ def register_project_tools(mcp: FastMCP) -> None:
         is_time_tracking_enabled: bool | None = None,
         default_state: str | None = None,
         estimate: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Project:
         """
         Update a project by ID.
 
         Args:
-            workspace_slug: The workspace slug identifier
             project_id: UUID of the project
+            workspace_slug: Optional; overrides default workspace for this call
             name: Project name
             description: Project description
             project_lead: UUID of the project lead user
@@ -214,7 +217,7 @@ def register_project_tools(mcp: FastMCP) -> None:
         Returns:
             Updated Project object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Validate timezone against allowed literal values
         validated_timezone: TimezoneEnum | None = (
@@ -249,61 +252,63 @@ def register_project_tools(mcp: FastMCP) -> None:
         return client.projects.update(workspace_slug=workspace_slug, project_id=project_id, data=data)
 
     @mcp.tool()
-    def delete_project(project_id: str) -> None:
+    def delete_project(project_id: str, workspace_slug: str | None = None) -> None:
         """
         Delete a project by ID.
 
         Args:
-            workspace_slug: The workspace slug identifier
             project_id: UUID of the project
+            workspace_slug: Optional; overrides default workspace for this call
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.projects.delete(workspace_slug=workspace_slug, project_id=project_id)
 
     @mcp.tool()
-    def get_project_worklog_summary(project_id: str) -> list[ProjectWorklogSummary]:
+    def get_project_worklog_summary(project_id: str, workspace_slug: str | None = None) -> list[ProjectWorklogSummary]:
         """
         Get work log summary for a project.
 
         Args:
-            workspace_slug: The workspace slug identifier
             project_id: UUID of the project
+            workspace_slug: Optional; overrides default workspace for this call
 
         Returns:
             List of ProjectWorklogSummary objects containing work item IDs and durations
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.projects.get_worklog_summary(workspace_slug=workspace_slug, project_id=project_id)
 
     @mcp.tool()
-    def get_project_members(project_id: str, params: dict[str, Any] | None = None) -> list[UserLite]:
+    def get_project_members(
+        project_id: str, params: dict[str, Any] | None = None, workspace_slug: str | None = None
+    ) -> list[UserLite]:
         """
         Get all members of a project.
 
         Args:
-            workspace_slug: The workspace slug identifier
             project_id: UUID of the project
             params: Optional query parameters as a dictionary
+            workspace_slug: Optional; overrides default workspace for this call
 
         Returns:
             List of UserLite objects representing project members
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.projects.get_members(workspace_slug=workspace_slug, project_id=project_id, params=params)
 
     @mcp.tool()
-    def get_project_features(project_id: str) -> ProjectFeature:
+    def get_project_features(project_id: str, workspace_slug: str | None = None) -> ProjectFeature:
         """
         Get features of a project.
 
         Args:
-            workspace_slug: The workspace slug identifier
             project_id: UUID of the project
+            workspace_slug: Optional; overrides default workspace for this call
 
         Returns:
             ProjectFeature object containing enabled/disabled features
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.projects.get_features(workspace_slug=workspace_slug, project_id=project_id)
 
     @mcp.tool()
@@ -316,12 +321,12 @@ def register_project_tools(mcp: FastMCP) -> None:
         pages: bool | None = None,
         intakes: bool | None = None,
         work_item_types: bool | None = None,
+        workspace_slug: str | None = None,
     ) -> ProjectFeature:
         """
         Update features of a project.
 
         Args:
-            workspace_slug: The workspace slug identifier
             project_id: UUID of the project
             epics: Enable/disable epics feature
             modules: Enable/disable modules feature
@@ -330,11 +335,12 @@ def register_project_tools(mcp: FastMCP) -> None:
             pages: Enable/disable pages feature
             intakes: Enable/disable intakes feature
             work_item_types: Enable/disable work item types feature
+            workspace_slug: Optional; overrides default workspace for this call
 
         Returns:
             Updated ProjectFeature object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         data = ProjectFeature(
             epics=epics,

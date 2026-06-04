@@ -27,6 +27,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         project_id: str,
         type_id: str,
         params: dict[str, Any] | None = None,
+        workspace_slug: str | None = None,
     ) -> list[WorkItemProperty]:
         """
         List work item properties for a work item type.
@@ -40,7 +41,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         Returns:
             List of WorkItemProperty objects
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.work_item_properties.list(
             workspace_slug=workspace_slug,
             project_id=project_id,
@@ -65,6 +66,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         external_source: str | None = None,
         external_id: str | None = None,
         options: list[dict] | None = None,
+        workspace_slug: str | None = None,
     ) -> WorkItemProperty:
         """
         Create a new work item property.
@@ -94,7 +96,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         Returns:
             Created WorkItemProperty object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Convert string to PropertyType enum
         validated_property_type = PropertyType(property_type)
@@ -142,6 +144,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         project_id: str,
         type_id: str,
         work_item_property_id: str,
+        workspace_slug: str | None = None,
     ) -> WorkItemProperty:
         """
         Retrieve a work item property by ID.
@@ -155,7 +158,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         Returns:
             WorkItemProperty object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         return client.work_item_properties.retrieve(
             workspace_slug=workspace_slug,
             project_id=project_id,
@@ -180,6 +183,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         validation_rules: dict | None = None,
         external_source: str | None = None,
         external_id: str | None = None,
+        workspace_slug: str | None = None,
     ) -> WorkItemProperty:
         """
         Update a work item property by ID.
@@ -209,7 +213,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         Returns:
             Updated WorkItemProperty object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Convert string to PropertyType enum if provided
         validated_property_type: PropertyType | None = None
@@ -257,6 +261,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
         project_id: str,
         type_id: str,
         work_item_property_id: str,
+        workspace_slug: str | None = None,
     ) -> None:
         """
         Delete a work item property by ID.
@@ -267,7 +272,7 @@ def register_work_item_property_tools(mcp: FastMCP) -> None:
             type_id: UUID of the work item type
             work_item_property_id: UUID of the property
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
         client.work_item_properties.delete(
             workspace_slug=workspace_slug,
             project_id=project_id,

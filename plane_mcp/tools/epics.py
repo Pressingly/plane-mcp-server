@@ -37,6 +37,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
         project_id: str,
         cursor: str | None = None,
         per_page: int | None = None,
+        workspace_slug: str | None = None,
     ) -> list[Epic]:
         """
         List all epics in a project.
@@ -49,7 +50,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
         Returns:
             List of Epic objects
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         params = PaginatedQueryParams(
             cursor=cursor,
@@ -83,6 +84,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
         parent: str | None = None,
         state: str | None = None,
         estimate_point: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Epic:
         """
         Create a new epic.
@@ -111,7 +113,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
         Returns:
             Created WorkItem object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Validate priority against allowed literal values
         validated_priority: PriorityEnum | None = (
@@ -170,6 +172,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
         external_id: str | None = None,
         state: str | None = None,
         estimate_point: str | None = None,
+        workspace_slug: str | None = None,
     ) -> Epic:
         """
         Update an epic by ID.
@@ -196,7 +199,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
         Returns:
             Updated Epic object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         # Validate priority against allowed literal values
         valid_priorities = get_args(PriorityEnum)
@@ -239,6 +242,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
     def retrieve_epic(
         project_id: str,
         epic_id: str,
+        workspace_slug: str | None = None,
     ) -> Epic:
         """
         Retrieve an epic by ID.
@@ -250,7 +254,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
         Returns:
             Epic object
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         params = RetrieveQueryParams()
 
@@ -265,6 +269,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
     def delete_epic(
         project_id: str,
         epic_id: str,
+        workspace_slug: str | None = None,
     ) -> None:
         """
         Delete an epic by ID.
@@ -276,7 +281,7 @@ def register_epic_tools(mcp: FastMCP) -> None:
         Returns:
             None
         """
-        client, workspace_slug = get_plane_client_context()
+        client, workspace_slug = get_plane_client_context(workspace_slug_from_client=workspace_slug)
 
         return client.work_items.delete(
             workspace_slug=workspace_slug,
