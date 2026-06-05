@@ -2,6 +2,8 @@
 
 from fastmcp import FastMCP
 
+from plane_mcp.moneta.inject import add_workspace_arg
+from plane_mcp.moneta.tools import register_moneta_tools
 from plane_mcp.tools.cycles import register_cycle_tools
 from plane_mcp.tools.epics import register_epic_tools
 from plane_mcp.tools.initiatives import register_initiative_tools
@@ -48,3 +50,5 @@ def register_tools(mcp: FastMCP) -> None:
     register_epic_tools(mcp)
     register_milestone_tools(mcp)
     register_pql_tools(mcp)
+    register_moneta_tools(mcp)  # Moneta fork: list_workspaces
+    add_workspace_arg(mcp)  # Moneta fork: inject optional workspace_slug on every workspace-scoped tool
