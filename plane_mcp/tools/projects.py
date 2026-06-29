@@ -17,7 +17,6 @@ from plane.models.projects import (
     PaginatedProjectResponse,
     Project,
     ProjectFeature,
-    ProjectWorklogSummary,
     UpdateProject,
 )
 from plane.models.query_params import PaginatedQueryParams
@@ -298,21 +297,6 @@ def register_project_tools(mcp: FastMCP) -> None:
         """
         client, workspace_slug = get_plane_client_context()
         client.projects.unarchive(workspace_slug=workspace_slug, project_id=project_id)
-
-    @mcp.tool()
-    def get_project_worklog_summary(project_id: str) -> list[ProjectWorklogSummary]:
-        """
-        Get work log summary for a project.
-
-        Args:
-            workspace_slug: The workspace slug identifier
-            project_id: UUID of the project
-
-        Returns:
-            List of ProjectWorklogSummary objects containing work item IDs and durations
-        """
-        client, workspace_slug = get_plane_client_context()
-        return client.projects.get_worklog_summary(workspace_slug=workspace_slug, project_id=project_id)
 
     @mcp.tool()
     def get_project_members(project_id: str, params: dict[str, Any] | None = None) -> list[UserLite]:
