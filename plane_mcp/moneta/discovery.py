@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 
-from fastmcp import Context, FastMCP
+from fastmcp import FastMCP
 from fastmcp.tools.base import Tool
 from fastmcp.utilities.logging import get_logger
 
@@ -27,20 +27,24 @@ logger = get_logger(__name__)
 
 # ── defaults ────────────────────────────────────────────────────────────────
 
-DEFAULT_TOOLS: frozenset[str] = frozenset({
-    "list_projects",
-    "list_work_items",
-    "create_work_item",
-    "update_work_item",
-    "search_work_items",
-})
+DEFAULT_TOOLS: frozenset[str] = frozenset(
+    {
+        "list_projects",
+        "list_work_items",
+        "create_work_item",
+        "update_work_item",
+        "search_work_items",
+    }
+)
 
 # Meta tools are always visible — never disabled.
-META_TOOLS: frozenset[str] = frozenset({
-    "list_available_tools",
-    "enable_tools",
-    "list_workspaces",
-})
+META_TOOLS: frozenset[str] = frozenset(
+    {
+        "list_available_tools",
+        "enable_tools",
+        "list_workspaces",
+    }
+)
 
 # Module categories for display grouping in list_available_tools.
 # Order here determines display order.
@@ -222,7 +226,7 @@ def register_discovery_tools(mcp: FastMCP) -> None:
         return "\n".join(lines)
 
     @mcp.tool()
-    async def enable_tools(tool_names: list[str], ctx: Context) -> str:
+    def enable_tools(tool_names: list[str]) -> str:
         """Enable additional tools on this MCP server so you can call them.
 
         After calling this, the newly enabled tools will appear in your tool
@@ -244,9 +248,12 @@ def register_discovery_tools(mcp: FastMCP) -> None:
                 msg += f" Unknown tools: {', '.join(invalid)}"
             return msg
 
-        # Session-scoped enable — sends ToolListChangedNotification to the
-        # calling client so the LLM sees the newly available tools.
-        await ctx.enable_components(names=set(valid), components={"tool"})
+        # Provider-level enable so the change persists across stateless HTTP
+        # requests (session-scoped ctx.enable_components is lost when
+        # stateless_http=True because each request is a fresh session).
+        names_to_enable = set(valid)
+        _globally_enabled.update(names_to_enable)
+        mcp._local_provider.enable(names=names_to_enable, components={"tool"})
 
         parts = [f"Enabled {len(valid)} tool(s): {', '.join(sorted(valid))}"]
         if invalid:
