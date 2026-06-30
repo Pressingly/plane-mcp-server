@@ -187,13 +187,12 @@ def register_discovery_tools(mcp: FastMCP) -> None:
     def list_available_tools() -> str:
         """List ALL available tools on this Plane MCP server, grouped by category.
 
-        Shows which tools are currently enabled and which can be activated
-        with the enable_tools tool. Use this to discover tools you need
-        before enabling them.
+        Shows which tools are currently enabled. Tools marked 'not yet
+        enabled' ARE available — call enable_tools to activate them.
 
         Returns:
             A formatted catalog of all tools with their descriptions and
-            enabled/disabled status.
+            enabled status.
         """
         category_map: dict[str, str] = dict(MODULE_CATEGORIES)
         groups: dict[str, list[str]] = {}
@@ -206,11 +205,20 @@ def register_discovery_tools(mcp: FastMCP) -> None:
             cat_label = category_map.get(cat_key, cat_key.replace("_", " ").title())
             enabled = name in _globally_enabled
             desc = _tool_descriptions.get(name, "")
-            status = " (ENABLED)" if enabled else ""
+            status = " (ENABLED)" if enabled else " (not yet enabled — call enable_tools)"
             line = f"- {name}: {desc}{status}"
             groups.setdefault(cat_label, []).append(line)
 
-        lines: list[str] = ["Available Plane MCP tools:\n"]
+        all_names = {t.name for t in _get_all_tools(mcp)} - META_TOOLS
+        enabled_count = len(_globally_enabled & all_names)
+        not_enabled_count = len(all_names - _globally_enabled)
+
+        lines: list[str] = [
+            f"Plane MCP Tools: {enabled_count} enabled, "
+            f"{not_enabled_count} more available.\n"
+            f"To use any 'not yet enabled' tool, call "
+            f"enable_tools(tool_names=[...]) first.\n"
+        ]
         ordered_labels = [label for _, label in MODULE_CATEGORIES]
         for label in ordered_labels:
             if label in groups:
@@ -222,12 +230,12 @@ def register_discovery_tools(mcp: FastMCP) -> None:
             lines.extend(sorted(groups[label]))
             lines.append("")
 
-        lines.append("Use enable_tools to activate any disabled tools.")
         return "\n".join(lines)
 
     @mcp.tool()
     def enable_tools(tool_names: list[str]) -> str:
-        """Enable additional tools on this MCP server so you can call them.
+        """REQUIRED before using any non-default tool. Activates additional
+        Plane tools by name so you can call them.
 
         After calling this, the newly enabled tools will appear in your tool
         list. Use list_available_tools first to see what's available.
@@ -251,9 +259,11 @@ def register_discovery_tools(mcp: FastMCP) -> None:
         # Provider-level enable so the change persists across stateless HTTP
         # requests (session-scoped ctx.enable_components is lost when
         # stateless_http=True because each request is a fresh session).
-        names_to_enable = set(valid)
-        _globally_enabled.update(names_to_enable)
-        mcp._local_provider.enable(names=names_to_enable, components={"tool"})
+        # Re-apply the full whitelist with only=True to replace the startup
+        # whitelist — additive enable() without only=True doesn't override
+        # the only=True filter set by _apply_default_visibility.
+        _globally_enabled.update(valid)
+        mcp._local_provider.enable(names=_globally_enabled, only=True, components={"tool"})
 
         parts = [f"Enabled {len(valid)} tool(s): {', '.join(sorted(valid))}"]
         if invalid:
