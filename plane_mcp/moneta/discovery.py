@@ -251,9 +251,11 @@ def register_discovery_tools(mcp: FastMCP) -> None:
         # Provider-level enable so the change persists across stateless HTTP
         # requests (session-scoped ctx.enable_components is lost when
         # stateless_http=True because each request is a fresh session).
-        names_to_enable = set(valid)
-        _globally_enabled.update(names_to_enable)
-        mcp._local_provider.enable(names=names_to_enable, components={"tool"})
+        # Re-apply the full whitelist with only=True to replace the startup
+        # whitelist — additive enable() without only=True doesn't override
+        # the only=True filter set by _apply_default_visibility.
+        _globally_enabled.update(valid)
+        mcp._local_provider.enable(names=_globally_enabled, only=True, components={"tool"})
 
         parts = [f"Enabled {len(valid)} tool(s): {', '.join(sorted(valid))}"]
         if invalid:
