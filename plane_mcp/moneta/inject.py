@@ -30,7 +30,7 @@ from plane_mcp.moneta import workspace as ws
 logger = get_logger(__name__)
 
 # Moneta tools that are not workspace-scoped — leave them untouched.
-_SKIP_TOOLS = frozenset({"list_workspaces", "list_available_tools", "enable_tools"})
+_SKIP_TOOLS = frozenset({"list_workspaces", "list_available_tools", "enable_tools", "execute_tool"})
 
 _WS_DESCRIPTION = (
     "Optional. The Plane workspace slug to act on (call list_workspaces to discover "

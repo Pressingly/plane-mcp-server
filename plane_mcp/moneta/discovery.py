@@ -42,6 +42,7 @@ META_TOOLS: frozenset[str] = frozenset(
     {
         "list_available_tools",
         "enable_tools",
+        "execute_tool",
         "list_workspaces",
     }
 )
@@ -177,11 +178,31 @@ def _apply_default_visibility(mcp: FastMCP) -> None:
 
 
 def register_discovery_tools(mcp: FastMCP) -> None:
-    """Register the two meta tools and apply default visibility.
+    """Register the meta tools and apply default visibility.
 
     Must be called AFTER all domain tools and ``add_workspace_arg`` have been
     registered (and after ``build_tool_catalog`` has snapshotted metadata).
     """
+
+    def _tool_map() -> dict[str, Tool]:
+        return {t.name: t for t in _get_all_tools(mcp)}
+
+    @mcp.tool()
+    def execute_tool(tool_name: str, arguments: dict):
+        """Execute any available tool by name. Use list_available_tools
+        first to discover tool names and their parameters.
+
+        Args:
+            tool_name: Name of the tool (from list_available_tools).
+            arguments: Dict of arguments matching the tool's parameters.
+        """
+        if tool_name in META_TOOLS:
+            return f"Meta tool '{tool_name}' must be called directly."
+        tools = _tool_map()
+        tool = tools.get(tool_name)
+        if tool is None:
+            return f"Unknown tool: {tool_name}. Call list_available_tools to see available tools."
+        return tool.run(arguments)
 
     @mcp.tool()
     def list_available_tools() -> str:
@@ -207,6 +228,18 @@ def register_discovery_tools(mcp: FastMCP) -> None:
             desc = _tool_descriptions.get(name, "")
             status = " (ENABLED)" if enabled else " (not yet enabled — call enable_tools)"
             line = f"- {name}: {desc}{status}"
+            tool_obj = _tool_map().get(name)
+            if tool_obj and hasattr(tool_obj, "parameters"):
+                params = tool_obj.parameters or {}
+                props = params.get("properties", {})
+                required = set(params.get("required", []))
+                if props:
+                    param_parts = []
+                    for pname, pschema in props.items():
+                        ptype = pschema.get("type", "any")
+                        req = " (required)" if pname in required else ""
+                        param_parts.append(f"{pname}: {ptype}{req}")
+                    line += f"\n    Parameters: {', '.join(param_parts)}"
             groups.setdefault(cat_label, []).append(line)
 
         all_names = {t.name for t in _get_all_tools(mcp)} - META_TOOLS
@@ -217,7 +250,8 @@ def register_discovery_tools(mcp: FastMCP) -> None:
             f"Plane MCP Tools: {enabled_count} enabled, "
             f"{not_enabled_count} more available.\n"
             f"To use any 'not yet enabled' tool, call "
-            f"enable_tools(tool_names=[...]) first.\n"
+            f"enable_tools(tool_names=[...]) or use "
+            f"execute_tool(tool_name='...', arguments={{...}}).\n"
         ]
         ordered_labels = [label for _, label in MODULE_CATEGORIES]
         for label in ordered_labels:
