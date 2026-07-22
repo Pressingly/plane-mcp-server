@@ -8,6 +8,7 @@ never fires and the client is bounced through a full re-authorization every hour
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import httpx
@@ -64,7 +65,12 @@ def test_correct_expires_in_replaces_the_inflated_lifetime():
 
 
 def test_correct_expires_in_preserves_the_rest_of_the_response():
-    body = {"access_token": _access_token(3600), "id_token": "id", "refresh_token": "r", "expires_in": _INFLATED_EXPIRES_IN}
+    body = {
+        "access_token": _access_token(3600),
+        "id_token": "id",
+        "refresh_token": "r",
+        "expires_in": _INFLATED_EXPIRES_IN,
+    }
     corrected = _correct_expires_in(_token_response(body)).json()
     assert corrected["id_token"] == "id"
     assert corrected["refresh_token"] == "r"
@@ -102,3 +108,38 @@ def test_provider_registers_the_hook_on_both_grants(monkeypatch):
 
     assert _correct_expires_in in hooks["access_token_response"]
     assert _correct_expires_in in hooks["refresh_token_response"]
+
+
+def test_authlib_invokes_the_hook_on_both_grants():
+    """Guards the hook contract: authlib calls compliance hooks as ``resp -> resp``.
+
+    Membership alone can't catch a signature change upstream (authlib's
+    ``refresh_token_request`` hook, for instance, takes ``(url, headers, body)``),
+    so drive a real client through both grants.
+    """
+    token_url = "https://auth.example.test/token"
+    body = {
+        "access_token": _access_token(3600),
+        "id_token": "id",
+        "refresh_token": "r",
+        "token_type": "Bearer",
+        "expires_in": _INFLATED_EXPIRES_IN,
+    }
+
+    async def _run():
+        client = AsyncOAuth2Client(
+            client_id="stub",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)),
+        )
+        client.register_compliance_hook("access_token_response", _correct_expires_in)
+        client.register_compliance_hook("refresh_token_response", _correct_expires_in)
+        async with client:
+            exchanged = await client.fetch_token(url=token_url, grant_type="authorization_code", code="c")
+            refreshed = await client.refresh_token(url=token_url, refresh_token="r")
+        return exchanged, refreshed
+
+    exchanged, refreshed = asyncio.run(_run())
+
+    assert exchanged["expires_in"] == pytest.approx(3600, abs=2)
+    assert refreshed["expires_in"] == pytest.approx(3600, abs=2)
+    assert exchanged["id_token"] == "id"
