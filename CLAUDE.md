@@ -119,7 +119,7 @@ Upstream files touched (the entire upstream footprint):
 |---|---|
 | `__main__.py` | http mode → `moneta.http.run()` when `moneta.http.enabled()` (i.e. `COGNITO_USER_POOL_ID` set), else upstream Plane-OAuth+SSE |
 | `client.py` | `get_plane_client_context` calls `bearer_for(...)`, `resolve_workspace(...)`, and `build_plane_client(...)` |
-| `tools/__init__.py` | `register_moneta_tools(mcp)` + `add_workspace_arg(mcp)` at the end of `register_tools` |
+| `tools/__init__.py` | `register_moneta_tools(mcp)` + `add_workspace_arg(mcp)` + `apply_tool_visibility(mcp)` at the end of `register_tools`; `register_milestone_tools` is **not** called (milestones are unsupported by the community edition — the file itself stays byte-pristine) |
 
 ## `plane_mcp/moneta/` modules
 
@@ -131,6 +131,7 @@ Upstream files touched (the entire upstream footprint):
 | `workspace.py` | `resolve_workspace(claim, env)` precedence resolver + `_fetch_workspaces()` (raw GET `/api/users/me/workspaces/`). |
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
+| `visibility.py` | `apply_tool_visibility(mcp)` — exposes only the curated `ENABLED_TOOLS` set on `tools/list` (see "Tool visibility"). |
 | `storage.py` | `build_oauth_storage()` — Valkey **DB 12** + Fernet for the Cognito provider's OAuth state (via `MCP_OAUTH_STORAGE_URL`). |
 | `http.py` | `enabled()` / `run()` — the Cognito HTTP server entry point + self-contained JSON logging. |
 
@@ -203,6 +204,27 @@ per-call workspace_slug arg (ContextVar)  >  token claim (PAT/Plane-OAuth)  >  P
 `list_workspaces` (the discovery tool) is the only tool skipped by the injector. Usage in Claude:
 call `list_workspaces` to get slugs, then pass `workspace_slug` per tool call.
 
+## Tool visibility (standard MCPO listing)
+
+`tools/list` returns a **fixed curated set** — the MCPO convention, where each listed tool becomes
+one generated HTTP endpoint. There is no runtime discovery layer: the former `list_available_tools`
+/ `enable_tools` / `execute_tool` meta tools were removed, so an LLM sees the real tool list on
+connect and calls tools directly.
+
+`moneta/visibility.py` holds `ENABLED_TOOLS` (41 names) plus `ALWAYS_ENABLED = {list_workspaces}`,
+and applies them via `mcp._local_provider.enable(names=…, only=True, components={"tool"})`. The
+other 66 tools stay **registered but hidden** — absent from `tools/list` and rejected on
+`tools/call` — so re-activating one is a one-line change, not a re-implementation.
+
+- `apply_tool_visibility(mcp)` must run **last** in `register_tools`: `add_workspace_arg` does
+  `remove_tool()` + `add_tool()` per tool, which would discard an earlier filter.
+- `PLANE_MCP_ENABLED_TOOLS` (comma-separated) **replaces** the curated set at runtime;
+  `list_workspaces` is unioned in unconditionally so a partial override can't brick workspace
+  resolution.
+- Milestone tools are not registered at all (community edition lacks the endpoints).
+- `tests/test_visibility.py` asserts `tools/list` equals the whitelist exactly and that a hidden
+  tool (`create_project`) is rejected on call.
+
 ## Moneta environment variables
 
 | Variable | Purpose |
@@ -215,6 +237,7 @@ call `list_workspaces` to get slugs, then pass `workspace_slug` per tool call.
 | `PLANE_BASE_URL` | Public mPass URL (e.g. `https://pm.foss.local.dev`); used for both app routes and `/api/v1`. |
 | `REQUESTS_CA_BUNDLE` | Devstack mkcert CA, so `requests`/plane-sdk trust the self-signed cert. |
 | `MCP_LOG_LEVEL` | `DEBUG` raises the fastmcp/moneta loggers (debug traces gate on `moneta.http._configure_logging`). |
+| `PLANE_MCP_ENABLED_TOOLS` | Optional comma-separated tool whitelist; **replaces** `ENABLED_TOOLS` (see "Tool visibility"). Unset in devstack. |
 
 ## Devstack
 

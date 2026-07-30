@@ -11,8 +11,11 @@ import asyncio
 import os
 import uuid
 
+import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+
+from plane_mcp.moneta.visibility import ALWAYS_ENABLED, ENABLED_TOOLS
 
 
 def get_config():
@@ -56,12 +59,8 @@ async def run_integration_test():
     2. Create work item 1
     3. Create work item 2
     4. Update work item 2 with work item 1 as parent
-    5. Create a milestone and associate it with work items
-    6. Update the milestone to change its name and description
-    7. List all milestones in the project
-    8. Delete the milestone
-    9. Delete work items
-    10. Delete project
+    5. Delete work items
+    6. Delete project
     """
     config = get_config()
     unique_id = uuid.uuid4().hex[:6]
@@ -127,50 +126,7 @@ async def run_integration_test():
         )
         print("Set work item 1 as parent of work item 2")
 
-        # 5. Create a milestone and associate it with work items
-        print("Creating milestone...")
-        milestone_result = await client.call_tool(
-            "create_milestone",
-            {
-                "project_id": project_id,
-                "name": f"Milestone {unique_id}",
-                "description": "Integration test milestone",
-                "associated_work_item_ids": [work_item_1_id, work_item_2_id],
-            },
-        )
-        milestone = extract_result(milestone_result)
-        milestone_id = milestone["id"]
-
-        print("List work items associated with milestone...")
-
-        milestone_details_result = await client.call_tool(
-            "list_milestone_work_items",
-            {
-                "project_id": project_id,
-                "milestone_id": milestone_id,
-            },
-        )
-
-        milestone_work_items = extract_result(milestone_details_result)
-        print(f"Work items associated with milestone: {[wi['id'] for wi in milestone_work_items]}")
-
-        print(f"Created milestone: {milestone_id}")
-
-        # 6. Update the milestone to change its name and description
-        print("Updating milestone...")
-        await client.call_tool(
-            "update_milestone",
-            {
-                "project_id": project_id,
-                "milestone_id": milestone_id,
-                "name": f"Updated Milestone {unique_id}",
-                "description": "Updated description for integration test milestone"
-            },
-        )
-
-        print("Updated milestone")
-
-        # 7. Delete work items
+        # 5. Delete work items
         print("Deleting work items...")
         await client.call_tool(
             "delete_work_item",
@@ -184,7 +140,7 @@ async def run_integration_test():
         )
         print("Deleted work item 1")
 
-        # 8. Delete project
+        # 6. Delete project
         print("Deleting project...")
         await client.call_tool("delete_project", {"project_id": project_id})
         print("Deleted project")
@@ -192,113 +148,25 @@ async def run_integration_test():
         print("Integration test passed!")
 
 
+@pytest.mark.skip(
+    reason="Moneta fork: create_project / delete_project / delete_work_item are registered "
+    "but hidden by the tool whitelist, so this flow is not callable over MCP."
+)
 def test_full_integration():
     """Pytest entry point - runs the async integration test."""
     asyncio.run(run_integration_test())
 
 
-# Expected tools that should be registered with the MCP server
-EXPECTED_TOOLS = [
-    # Project tools
-    "create_project",
-    "list_projects",
-    "retrieve_project",
-    "update_project",
-    "delete_project",
-    # Work item tools
-    "create_work_item",
-    "list_work_items",
-    "retrieve_work_item",
-    "update_work_item",
-    "delete_work_item",
-    # Label tools
-    "list_labels",
-    "create_label",
-    "retrieve_label",
-    "update_label",
-    "delete_label",
-    # State tools
-    "list_states",
-    "create_state",
-    "retrieve_state",
-    "update_state",
-    "delete_state",
-    # Page tools
-    "retrieve_workspace_page",
-    "retrieve_project_page",
-    "create_workspace_page",
-    "create_project_page",
-    # Work item activity tools
-    "list_work_item_activities",
-    "retrieve_work_item_activity",
-    # Work item comment tools
-    "list_work_item_comments",
-    "retrieve_work_item_comment",
-    "create_work_item_comment",
-    "update_work_item_comment",
-    "delete_work_item_comment",
-    # Work item link tools
-    "list_work_item_links",
-    "retrieve_work_item_link",
-    "create_work_item_link",
-    "update_work_item_link",
-    "delete_work_item_link",
-    # Work item relation tools
-    "list_work_item_relations",
-    "create_work_item_relation",
-    "remove_work_item_relation",
-    # Workspace tools
-    "get_workspace_members",
-    "get_workspace_features",
-    "update_workspace_features",
-    # Cycle tools
-    "list_cycles",
-    "create_cycle",
-    "retrieve_cycle",
-    "update_cycle",
-    "delete_cycle",
-    "list_archived_cycles",
-    "add_work_items_to_cycle",
-    "remove_work_item_from_cycle",
-    "list_cycle_work_items",
-    "transfer_cycle_work_items",
-    "archive_cycle",
-    "unarchive_cycle",
-    # Module tools
-    "list_modules",
-    "create_module",
-    "retrieve_module",
-    "update_module",
-    "delete_module",
-    "list_archived_modules",
-    "add_work_items_to_module",
-    "remove_work_item_from_module",
-    "list_module_work_items",
-    "archive_module",
-    "unarchive_module",
-    # Initiative tools
-    "list_initiatives",
-    "create_initiative",
-    "retrieve_initiative",
-    "update_initiative",
-    "delete_initiative",
-    # Intake tools
-    "list_intake_work_items",
-    "create_intake_work_item",
-    "retrieve_intake_work_item",
-    "update_intake_work_item",
-    "delete_intake_work_item",
-    # User tools
-    "get_me",
-]
-
-
 async def run_tools_availability_test():
     """
-    Test that all expected tools are available on the MCP server.
-    This test verifies that all registered tools are exposed correctly.
+    Test that the live server exposes exactly the Moneta whitelist.
+
+    Moneta fork: tools/list is a static curated set, so this asserts an exact
+    match rather than a subset — a stray extra tool is as much a bug as a
+    missing one.
     """
     config = get_config()
+    expected = set(ENABLED_TOOLS) | set(ALWAYS_ENABLED)
 
     transport = StreamableHttpTransport(
         f"{config['mcp_url']}/http/api-key/mcp",
@@ -315,22 +183,17 @@ async def run_tools_availability_test():
 
         print(f"Found {len(tool_names)} tools on the server")
 
-        # Check that all expected tools are available
-        missing_tools = []
-        for expected_tool in EXPECTED_TOOLS:
-            if expected_tool not in tool_names:
-                missing_tools.append(expected_tool)
+        missing = sorted(expected - tool_names)
+        unexpected = sorted(tool_names - expected)
+        if missing or unexpected:
+            raise AssertionError(f"tools/list mismatch — missing: {missing}, unexpected: {unexpected}")
 
-        if missing_tools:
-            print(f"Missing tools: {missing_tools}")
-            raise AssertionError(f"The following expected tools are not available: {missing_tools}")
-
-        print(f"All {len(EXPECTED_TOOLS)} expected tools are available!")
+        print(f"All {len(expected)} whitelisted tools are exposed, and nothing else!")
         print("Tools availability test passed!")
 
 
 def test_tools_availability():
-    """Pytest entry point - verifies all expected tools are registered."""
+    """Pytest entry point - verifies the live server exposes exactly the whitelist."""
     asyncio.run(run_tools_availability_test())
 
 
