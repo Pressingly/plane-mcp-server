@@ -148,19 +148,28 @@ async def run_integration_test():
         print("Integration test passed!")
 
 
-_WRITE_PATH_TOOLS = {"create_project", "delete_project", "delete_work_item"}
+# Every tool run_integration_test() calls. PLANE_MCP_ENABLED_TOOLS *replaces* the
+# curated set, so all of these must be named in it — listing only the hidden ones
+# would un-skip the test into a mid-run "Unknown tool" and orphan the project.
+_WRITE_PATH_TOOLS = {
+    "create_project",
+    "create_work_item",
+    "update_work_item",
+    "delete_work_item",
+    "delete_project",
+}
 
 
 def _write_path_exposed() -> bool:
-    """True when the operator has opted the write-path tools back in."""
+    """True when the operator has opted every tool this flow calls back in."""
     override = {n.strip() for n in os.environ.get("PLANE_MCP_ENABLED_TOOLS", "").split(",") if n.strip()}
     return _WRITE_PATH_TOOLS <= override
 
 
 @pytest.mark.skipif(
     not _write_path_exposed(),
-    reason="Moneta fork: create_project / delete_project / delete_work_item are registered but "
-    "hidden by the tool whitelist. Set PLANE_MCP_ENABLED_TOOLS to include them to run this flow.",
+    reason=f"Moneta fork: this flow's tools are registered but hidden by the whitelist. "
+    f"Set PLANE_MCP_ENABLED_TOOLS to include all of: {', '.join(sorted(_WRITE_PATH_TOOLS))}.",
 )
 def test_full_integration():
     """Pytest entry point - runs the async integration test."""
