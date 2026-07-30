@@ -73,7 +73,9 @@ async def test_tools_list_is_exactly_the_whitelist(server: FastMCP) -> None:
 async def test_hidden_tool_call_is_rejected(server: FastMCP) -> None:
     """No execute_tool bypass: a hidden tool cannot be invoked by name."""
     async with Client(server) as client:
-        with pytest.raises(ToolError):
+        # Match the message: any exposed tool also raises ToolError here (no
+        # workspace resolves), so a bare raises() would pass even if exposed.
+        with pytest.raises(ToolError, match="Unknown tool"):
             await client.call_tool("create_project", {"name": "x", "identifier": "XXX"})
 
 

@@ -148,9 +148,19 @@ async def run_integration_test():
         print("Integration test passed!")
 
 
-@pytest.mark.skip(
-    reason="Moneta fork: create_project / delete_project / delete_work_item are registered "
-    "but hidden by the tool whitelist, so this flow is not callable over MCP."
+_WRITE_PATH_TOOLS = {"create_project", "delete_project", "delete_work_item"}
+
+
+def _write_path_exposed() -> bool:
+    """True when the operator has opted the write-path tools back in."""
+    override = {n.strip() for n in os.environ.get("PLANE_MCP_ENABLED_TOOLS", "").split(",") if n.strip()}
+    return _WRITE_PATH_TOOLS <= override
+
+
+@pytest.mark.skipif(
+    not _write_path_exposed(),
+    reason="Moneta fork: create_project / delete_project / delete_work_item are registered but "
+    "hidden by the tool whitelist. Set PLANE_MCP_ENABLED_TOOLS to include them to run this flow.",
 )
 def test_full_integration():
     """Pytest entry point - runs the async integration test."""

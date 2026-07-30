@@ -22,7 +22,11 @@ python -m plane_mcp http
 pytest
 
 # Run a single test
-pytest tests/test_integration.py::test_full_integration -v
+pytest tests/test_visibility.py -v
+
+# The write-path E2E test is skipped unless its tools are opted back in
+PLANE_MCP_ENABLED_TOOLS=create_project,delete_project,delete_work_item,create_work_item,update_work_item \
+  pytest tests/test_integration.py::test_full_integration -v
 
 # Run tests with env vars from file
 export $(cat .env.test.local | xargs) && pytest tests/ -v
@@ -211,9 +215,9 @@ one generated HTTP endpoint. There is no runtime discovery layer: the former `li
 / `enable_tools` / `execute_tool` meta tools were removed, so an LLM sees the real tool list on
 connect and calls tools directly.
 
-`moneta/visibility.py` holds `ENABLED_TOOLS` (41 names) plus `ALWAYS_ENABLED = {list_workspaces}`,
+`moneta/visibility.py` holds `ENABLED_TOOLS` (45 names) plus `ALWAYS_ENABLED = {list_workspaces}`,
 and applies them via `mcp._local_provider.enable(names=…, only=True, components={"tool"})`. The
-other 66 tools stay **registered but hidden** — absent from `tools/list` and rejected on
+other 62 tools stay **registered but hidden** — absent from `tools/list` and rejected on
 `tools/call` — so re-activating one is a one-line change, not a re-implementation.
 
 - `apply_tool_visibility(mcp)` must run **last** in `register_tools`: `add_workspace_arg` does
@@ -247,4 +251,6 @@ other 66 tools stay **registered but hidden** — absent from `tools/list` and r
 - No source bind-mount — code is baked into the image, so **rebuild** to pick up changes:
   `make dev.build.plane-mcp && make dev.restart.plane-mcp`.
 - Logs: `docker logs plane-mcp`. Tests run without a live backend (httpx/requests mocked):
-  `pytest` (the 2 `test_integration` tests need live-backend env and otherwise fail by design).
+  `pytest`. In `test_integration.py`, `test_tools_availability` needs live-backend env and
+  otherwise fails by design; `test_full_integration` additionally needs its write-path tools
+  opted in via `PLANE_MCP_ENABLED_TOOLS` and is skipped otherwise.

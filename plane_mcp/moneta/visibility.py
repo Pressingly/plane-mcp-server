@@ -51,10 +51,13 @@ ENABLED_TOOLS: frozenset[str] = frozenset(
         "retrieve_work_item_by_identifier",
         "search_work_items",
         "update_work_item",
-        # Work item comments
+        # Work item comments — update/delete exposed so the agent can correct
+        # or retract a comment it wrote itself.
         "create_work_item_comment",
+        "delete_work_item_comment",
         "list_work_item_comments",
         "retrieve_work_item_comment",
+        "update_work_item_comment",
         # Work item links
         "list_work_item_links",
         "retrieve_work_item_link",
@@ -68,6 +71,9 @@ ENABLED_TOOLS: frozenset[str] = frozenset(
         "create_cycle",
         "list_cycle_work_items",
         "list_cycles",
+        # remove_* is the only way to undo an add — transfer moves every
+        # incomplete item, and no work-item field carries cycle/module.
+        "remove_work_item_from_cycle",
         "retrieve_cycle",
         "transfer_cycle_work_items",
         "update_cycle",
@@ -75,6 +81,7 @@ ENABLED_TOOLS: frozenset[str] = frozenset(
         "add_work_items_to_module",
         "list_module_work_items",
         "list_modules",
+        "remove_work_item_from_module",
         "retrieve_module",
         # Labels
         "list_labels",
