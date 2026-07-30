@@ -215,9 +215,9 @@ one generated HTTP endpoint. There is no runtime discovery layer: the former `li
 / `enable_tools` / `execute_tool` meta tools were removed, so an LLM sees the real tool list on
 connect and calls tools directly.
 
-`moneta/visibility.py` holds `ENABLED_TOOLS` (45 names) plus `ALWAYS_ENABLED = {list_workspaces}`,
+`moneta/visibility.py` holds `ENABLED_TOOLS` (46 names) plus `ALWAYS_ENABLED = {list_workspaces}`,
 and applies them via `mcp._local_provider.enable(names=…, only=True, components={"tool"})`. The
-other 62 tools stay **registered but hidden** — absent from `tools/list` and rejected on
+other 61 tools stay **registered but hidden** — absent from `tools/list` and rejected on
 `tools/call` — so re-activating one is a one-line change, not a re-implementation.
 
 - `apply_tool_visibility(mcp)` must run **last** in `register_tools`: `add_workspace_arg` does

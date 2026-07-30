@@ -47,6 +47,9 @@ ENABLED_TOOLS: frozenset[str] = frozenset(
         "list_work_items",
         "list_workspace_work_items",
         "remove_work_item_assignee",
+        # Paired with add_work_item_label — without it the only way to drop a
+        # label is update_work_item(labels=...), which replaces the whole list.
+        "remove_work_item_label",
         "retrieve_work_item",
         "retrieve_work_item_by_identifier",
         "search_work_items",
