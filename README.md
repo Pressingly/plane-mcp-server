@@ -133,13 +133,6 @@ export PLANE_WORKSPACE_SLUG="your-workspace-slug"
 
 The server provides comprehensive tools for interacting with Plane. All tools use Pydantic models from the Plane SDK for type safety and validation.
 
-> **Moneta fork — tool visibility.** Not every tool below is exposed. `tools/list` returns a
-> curated whitelist (`ENABLED_TOOLS` in `plane_mcp/moneta/visibility.py`); the rest stay
-> registered but hidden and are rejected on `tools/call`. To expose more tools, add the name to
-> `ENABLED_TOOLS` or set `PLANE_MCP_ENABLED_TOOLS` to a comma-separated list (which *replaces*
-> the whitelist; `list_workspaces` is always kept). Milestone tools are not registered at all —
-> the Plane community edition does not support them.
-
 ### Projects
 
 | Tool Name | Description |
@@ -238,6 +231,19 @@ The server provides comprehensive tools for interacting with Plane. All tools us
 | `retrieve_epic` | Retrieve an epic by ID |
 | `update_epic` | Update an epic by ID |
 | `delete_epic` | Delete an epic by ID |
+
+### Milestones
+
+| Tool Name | Description |
+|-----------|-------------|
+| `list_milestones` | List all milestones in a project |
+| `create_milestone` | Create a new milestone |
+| `retrieve_milestone` | Retrieve a milestone by ID |
+| `update_milestone` | Update a milestone by ID |
+| `delete_milestone` | Delete a milestone by ID |
+| `add_work_items_to_milestone` | Add work items to a milestone |
+| `remove_work_items_from_milestone` | Remove work items from a milestone |
+| `list_milestone_work_items` | List work items in a milestone |
 
 ### Labels
 
