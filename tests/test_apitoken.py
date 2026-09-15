@@ -5,6 +5,9 @@ but plane-api's DRF needs an `X-Api-Key`, so we mint a Plane API token and send
 both headers.
 """
 
+from plane.api.base_resource import BaseResource
+
+import plane_mcp.moneta.apiretry as apiretry
 import plane_mcp.moneta.apitoken as apt
 from plane_mcp.moneta.apitoken import (
     _cognito_identity,
@@ -153,6 +156,40 @@ def test_build_client_sends_both_headers_on_cognito_path(monkeypatch):
     headers = client.projects._headers()
     assert headers["Authorization"] == "Bearer idtok"  # mPass
     assert headers["X-Api-Key"] == "minted-key"  # plane-api DRF
+
+
+def test_build_client_arms_the_stale_key_retry_on_the_cognito_path(monkeypatch):
+    """The two activation lines are the retry's only production wiring.
+
+    Everything in test_apiretry.py exercises the decorator in isolation, so without
+    this the identity tag or the install() call could be deleted and the suite would
+    stay green while the 30-day stale-key bug silently returned.
+    """
+    monkeypatch.setattr(apt, "plane_api_key", lambda claims: "minted-key")
+
+    client = build_plane_client(
+        "https://pm.example",
+        api_key="",
+        access_token="idtok",
+        claims=_claims(username="1020"),
+    )
+
+    assert getattr(client.config, apt.MINTED_IDENTITY_ATTR, None) == "1020", (
+        "without the identity tag the retry cannot tell our key from a PAT and never fires"
+    )
+    for verb in apiretry._VERB_METHODS:
+        assert getattr(getattr(BaseResource, verb), apiretry._WRAPPED_MARKER, False), (
+            f"build_plane_client did not arm the retry on BaseResource.{verb}"
+        )
+
+
+def test_build_client_does_not_arm_the_retry_without_a_minted_key(monkeypatch):
+    """PAT / Plane-OAuth paths must not tag a Configuration we did not mint for."""
+    monkeypatch.setattr(apt, "plane_api_key", lambda claims: None)
+
+    client = build_plane_client("https://pm.example", api_key="pat", access_token=None, claims=None)
+
+    assert getattr(client.config, apt.MINTED_IDENTITY_ATTR, None) is None
 
 
 def test_build_client_bearer_only_when_no_minted_key(monkeypatch):
