@@ -41,6 +41,7 @@ from fastmcp.server.auth.jwt_issuer import derive_jwt_key
 from fastmcp.utilities.logging import get_logger
 from plane import PlaneClient
 
+from plane_mcp.moneta import apiretry
 from plane_mcp.moneta.client import plane_request_auth
 from plane_mcp.moneta.cognito import (
     COGNITO_USERNAME_CLAIM,
@@ -60,6 +61,10 @@ _CACHE_TTL_SECONDS = 30 * 24 * 3600
 # Distinct from storage.py's OAuth-state salt so the two key spaces never collide.
 _KEY_SALT = "plane-mcp-api-token-cache"
 _REQUEST_TIMEOUT = 30.0
+# Attribute stamped on a plane-sdk Configuration whose api_key we minted, naming the
+# identity to re-mint for. Absent on the PAT / Plane-OAuth paths, whose keys are not
+# ours to refresh.
+MINTED_IDENTITY_ATTR = "moneta_minted_identity"
 
 # Fallback when MCP_OAUTH_STORAGE_URL is unset (stdio / no Valkey). Process-local;
 # lost on restart, which only forces a re-mint.
@@ -139,6 +144,19 @@ def _cache_set(identity: str, token: str) -> None:
     except Exception as exc:  # noqa: BLE001 — fall back to memory
         logger.warning("api-token cache write failed (%s); caching in-process", exc)
         _memory_cache[identity] = token
+
+
+def _cache_delete(identity: str) -> None:
+    """Drop the cached token for ``identity`` so the next lookup mints a fresh one."""
+    client = _redis_client()
+    if client is None:
+        _memory_cache.pop(identity, None)
+        return
+    try:
+        client.delete(_CACHE_PREFIX + identity)
+    except Exception as exc:  # noqa: BLE001 — cache is best-effort
+        logger.warning("api-token cache delete failed (%s); dropping the in-process copy", exc)
+    _memory_cache.pop(identity, None)
 
 
 def _revoke_existing(base_url: str, headers: dict[str, str]) -> None:
@@ -225,6 +243,32 @@ def plane_api_key(claims: dict[str, Any] | None) -> str | None:
     return token
 
 
+def refresh_api_key(identity: str, stale: str) -> str | None:
+    """Return a replacement key for ``identity`` after ``stale`` was rejected.
+
+    Another in-flight request may have already re-minted for this identity — every
+    replica shares one Valkey entry, and :func:`_revoke_existing` deletes the other
+    replicas' tokens on each mint. Re-reading first means a burst of rejected calls
+    costs one mint between them instead of one mint each, which would otherwise have
+    them revoking each other in a loop.
+
+    Returns ``None`` when minting fails. A successful mint always yields a new token,
+    so this never hands back ``stale``; the caller's equality check against ``stale`` is
+    belt-and-braces, not a path that classifies permission denials. That classification
+    happens before the call, in :func:`plane_mcp.moneta.apiretry._is_token_rejection`.
+    """
+    current = _cache_get(identity)
+    if current and current != stale:
+        logger.debug("refresh_api_key: another request already re-minted for identity=%s", identity)
+        return current
+    _cache_delete(identity)
+    token = _mint()
+    if token:
+        _cache_set(identity, token)
+        logger.info("refresh_api_key: re-minted Plane API token for identity=%s", identity)
+    return token
+
+
 def build_plane_client(
     base_url: str,
     *,
@@ -248,6 +292,14 @@ def build_plane_client(
     if minted_key and access_token:
         client = PlaneClient(base_url=base_url, access_token=access_token)
         client.config.api_key = minted_key  # dual-header: Bearer (mPass) + X-Api-Key (DRF)
+        # Tag the identity onto the Configuration rather than a ContextVar: the tag then
+        # travels with the very object whose api_key it describes. Configuration is built
+        # per client and the client per call, so a refresh can never reach another
+        # request's client, and there is no token to reset on the way out.
+        identity = _cognito_identity(claims or {})
+        if identity:
+            setattr(client.config, MINTED_IDENTITY_ATTR, identity)
+            apiretry.install()
         logger.debug("build_plane_client: dual-header (id_token Bearer + minted X-Api-Key)")
         return client
     if access_token:

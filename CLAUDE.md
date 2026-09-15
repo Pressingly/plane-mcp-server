@@ -101,12 +101,22 @@ Everything above is upstream `makeplane/plane-mcp-server`; everything below is f
 
 ## Branch & commit policy
 
-- **`main` is the only live branch.** It tracks upstream (e.g. tag `v2.5.0-phoenix-838c572`).
-  `foss-main`, `jawad/*`, `wip/*` are **deprecated** — do not reference or forward-port them,
-  even though `foss-server-bundle`'s `make dev.clone.plane-mcp` still clones `foss-main` and that
-  branch carries a stale Cognito integration.
-- The Moneta integration is **uncommitted by policy** ("we will NOT commit"). It lives in the
-  working tree on top of `main`.
+This repo follows the same convention as every other app in the bundle:
+
+| Branch | Role |
+|---|---|
+| `foss-main` | **Production.** The live branch — prod images are built from here. |
+| `foss-sandbox` | **Staging.** Everything lands here first and is verified on staging. |
+| `main` | Upstream tracking only (e.g. tag `v2.5.0-phoenix-838c572`). Carries **no** Moneta code. |
+
+- Work goes `branch` → PR into `foss-sandbox` → promote to `foss-main`. Never commit directly to
+  either, and never target `foss-main` from a feature branch.
+- The Moneta integration **is committed**, on `foss-main` and `foss-sandbox`. Do not look for it
+  on `main`: `main` has no `plane_mcp/moneta/` package and no Cognito hook in `__main__.py`, so a
+  server built from it has no SSO mode, no `list_workspaces`, and no `workspace_slug` argument.
+- `jawad/*`, `wip/*`, `*-old` and `revert-*` are dead branches — do not reference or forward-port
+  them.
+- `foss-server-bundle`'s `make dev.clone.plane-mcp` clones `foss-main`, which is correct.
 
 ## Fork-isolation rule (read before editing)
 
