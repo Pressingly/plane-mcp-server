@@ -1,5 +1,8 @@
 """End-to-end test for the OAuth redirect attack reported by security researcher.
 
+Covers the upstream Plane-OAuth provider. The Cognito path, including clients
+stored before the allowlist was set, is covered in test_redirect_allowlist.py.
+
 Attack scenario:
   1. Attacker registers a malicious OAuth client with redirect_uri=https://attacker.com/steal
   2. Attacker crafts an authorization URL and tricks victim into visiting it
@@ -8,8 +11,8 @@ Attack scenario:
   5. Attacker exchanges code for access token cross-origin (enabled by CORS credentials:true)
   6. Attacker has full read/write access to victim's Plane workspace
 
-This test replays the attack against the real server app and verifies each
-security fix blocks the corresponding step.
+Since fastmcp 3.4 the attack stops at step 1: /register rejects any redirect_uri
+outside the allowlist. CORS still guards step 5.
 """
 
 import pytest
@@ -79,20 +82,15 @@ def client(app):
 
 
 class TestOAuthRedirectAttack:
-    """Replay the full attack chain and verify each fix blocks it.
+    """Verify the attack is blocked at registration and at the CORS layer.
 
-    The server uses an OAuth proxy architecture: /authorize redirects to
-    upstream Plane OAuth (not directly to the client's redirect_uri). After
-    Plane approves, the server's /auth/callback handles the response and
-    only then redirects to the MCP client's redirect_uri.
-
-    The allowed_client_redirect_uris patterns restrict which client URIs
-    the proxy will redirect to after the upstream callback completes.
+    The allowed_client_redirect_uris patterns restrict which client URIs can
+    be registered and which the proxy will redirect to after the upstream
+    callback completes.
     """
 
-    def _register_client(self, client: TestClient, redirect_uri: str) -> dict:
-        """Register an OAuth client with the given redirect_uri."""
-        response = client.post(
+    def _register(self, client: TestClient, redirect_uri: str):
+        return client.post(
             "/register",
             json={
                 "redirect_uris": [redirect_uri],
@@ -101,50 +99,25 @@ class TestOAuthRedirectAttack:
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
+
+    def _register_client(self, client: TestClient, redirect_uri: str) -> dict:
+        """Register an OAuth client with the given redirect_uri."""
+        response = self._register(client, redirect_uri)
         assert response.status_code == 201, f"Registration failed: {response.text}"
         data = response.json()
         assert "client_id" in data
         return data
 
     def test_full_attack_is_blocked(self, client: TestClient) -> None:
-        """Replay the exact attack: register with attacker URI, hit /authorize.
+        """Step 1 of the attack fails: the attacker cannot register their URI.
 
-        Even though the proxy architecture means /authorize redirects to
-        upstream Plane OAuth (not directly to the attacker), the server
-        must never include the attacker's URI anywhere in the redirect chain.
+        Since fastmcp 3.4, DCR checks every requested redirect_uri against the
+        allowlist, so no client carrying the attacker's URI ever reaches /authorize.
         """
-        attacker_uri = "https://attacker.com/steal"
+        response = self._register(client, "https://attacker.com/steal")
 
-        # Step 1: Attacker registers malicious client
-        reg = self._register_client(client, attacker_uri)
-
-        # Step 2: Attacker crafts authorization URL for victim
-        response = client.get(
-            "/authorize",
-            params={
-                "client_id": reg["client_id"],
-                "redirect_uri": attacker_uri,
-                "response_type": "code",
-                "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-                "code_challenge_method": "S256",
-            },
-        )
-
-        # The attacker's domain must never appear in any redirect
-        location = response.headers.get("location", "")
-        assert "attacker.com" not in location, (
-            f"VULNERABILITY: Attacker domain found in redirect! Location: {location}"
-        )
-
-        # If the server responds with a redirect, it should be to the upstream
-        # Plane OAuth provider — with the *server's own* callback URI, not the attacker's
-        if response.is_redirect:
-            assert "localhost" in location, (
-                f"Redirect should go to upstream Plane OAuth (localhost), got: {location}"
-            )
-            # The redirect_uri param in the upstream redirect must point to the
-            # server's /auth/callback, NOT to the attacker
-            assert "attacker" not in location
+        assert response.status_code == 400, f"Attacker URI was registered: {response.text}"
+        assert response.json()["error"] == "invalid_redirect_uri"
 
     @pytest.mark.parametrize(
         "malicious_uri",
@@ -163,31 +136,11 @@ class TestOAuthRedirectAttack:
             "unknown-protocol",
         ],
     )
-    def test_malicious_uris_never_appear_in_redirects(
-        self, client: TestClient, malicious_uri: str
-    ) -> None:
-        """Verify various attack vectors never leak into redirect locations."""
-        reg = self._register_client(client, malicious_uri)
+    def test_malicious_uris_are_rejected_at_registration(self, client: TestClient, malicious_uri: str) -> None:
+        response = self._register(client, malicious_uri)
 
-        response = client.get(
-            "/authorize",
-            params={
-                "client_id": reg["client_id"],
-                "redirect_uri": malicious_uri,
-                "response_type": "code",
-                "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-                "code_challenge_method": "S256",
-            },
-        )
-
-        # The malicious URI must not appear in any redirect location
-        location = response.headers.get("location", "")
-        if response.is_redirect:
-            # Extract the redirect_uri parameter from the upstream redirect
-            # It must be the server's /auth/callback, not the malicious URI
-            assert malicious_uri not in location, (
-                f"VULNERABILITY: Malicious URI leaked into redirect: {location}"
-            )
+        assert response.status_code == 400, f"Malicious URI was registered: {response.text}"
+        assert response.json()["error"] == "invalid_redirect_uri"
 
     def test_legitimate_redirect_uri_passes(self, client: TestClient) -> None:
         """Sanity check: legitimate localhost URI is accepted and the flow proceeds."""

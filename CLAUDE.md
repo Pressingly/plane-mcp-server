@@ -161,10 +161,10 @@ because Cognito access tokens carry **no `email`** and an opaque UUID `username`
 users — forwarding one provisions the *wrong* Plane account. `PlaneCognitoProvider`:
 
 1. `_extract_upstream_claims` decodes the id_token at token-exchange time and stashes it.
-2. `load_access_token` **re-attaches** it on every request — required because fastmcp 3.2.0's
-   `OAuthProxy.load_access_token` is a token-swap that drops the embedded `upstream_claims`.
-   Fail-closed: if the id_token can't be re-resolved it returns `None` (401) rather than forward
-   the access token.
+2. `load_access_token` **re-attaches** it on every request, read from the stored upstream token
+   set. fastmcp 3.4 also copies the JWT's `upstream_claims`, but that is an issuance-time
+   snapshot that a transparent upstream refresh does not update. Fail-closed: if the id_token
+   can't be re-resolved it returns `None` (401) rather than forward the access token.
 
 `bearer_for` then forwards that id_token as the Plane Bearer, which Plane's Traefik + mPass chain
 (oauth2-proxy validating against the Cognito JWKS) maps to the same user as the web login.
