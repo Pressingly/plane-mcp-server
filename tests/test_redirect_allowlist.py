@@ -17,6 +17,7 @@ import asyncio
 import pytest
 from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
 from fastmcp.server.auth.oidc_proxy import OIDCConfiguration, OIDCProxy
+from fastmcp.server.auth.providers.jwt import RSAKeyPair
 from key_value.aio.stores.memory import MemoryStore
 from pydantic import AnyUrl
 from starlette.testclient import TestClient
@@ -185,7 +186,8 @@ def test_stored_pattern_list_still_applies_while_allowlist_is_unset(server):
     open_server, provider = server("")
     client_id = _store_client(provider, CLAUDE_CALLBACK, stored_patterns=PROD_ALLOWLIST.split(","))
 
-    _assert_proceeds(_authorize(open_server, client_id, CLAUDE_CALLBACK))
+    _assert_proceeds(_authorize(open_server, client_id, "http://localhost:5555/unregistered"))
+    _assert_rejected(_authorize(open_server, client_id, EVIL_CALLBACK))
 
 
 def test_unset_allowlist_still_requires_a_registered_redirect_uri(server):
@@ -194,3 +196,76 @@ def test_unset_allowlist_still_requires_a_registered_redirect_uri(server):
 
     _assert_rejected(_authorize(open_server, client_id, EVIL_CALLBACK))
     _assert_proceeds(_authorize(open_server, client_id, CLAUDE_CALLBACK))
+
+
+def test_upstream_client_id_skips_registration_but_not_the_allowlist(server):
+    """fastmcp 3.4 synthesizes a client for the Cognito app client id without DCR.
+
+    With the allowlist unset it accepts any safe redirect_uri, which open DCR
+    already allowed; with the allowlist set it is held to the allowlist.
+    """
+    upstream_client_id = _COGNITO_ENV["OIDC_CLIENT_ID"]
+    open_server, _ = server("")
+    _assert_proceeds(_authorize(open_server, upstream_client_id, EVIL_CALLBACK))
+
+    locked_server, _ = server(PROD_ALLOWLIST)
+    _assert_rejected(_authorize(locked_server, upstream_client_id, EVIL_CALLBACK))
+    _assert_proceeds(_authorize(locked_server, upstream_client_id, CLAUDE_CALLBACK))
+
+
+def test_refresh_lifetime_fallback_keeps_the_30_day_cap(server):
+    _, provider = server(PROD_ALLOWLIST)
+
+    assert provider._fallback_refresh_token_expiry_seconds == 30 * 24 * 60 * 60
+
+
+@pytest.fixture
+def cognito_signer(server):
+    """Point the provider's real Cognito access-token verifier at a local RSA key."""
+    _, provider = server(PROD_ALLOWLIST)
+    keys = RSAKeyPair.generate()
+    verifier = provider._token_validator
+    verifier.public_key = keys.public_key
+    verifier.jwks_uri = None
+
+    def sign(**claims) -> str:
+        return keys.create_token(
+            subject="uuid-1",
+            issuer=_ISSUER,
+            scopes=["openid"],
+            additional_claims={"token_use": "access", "username": "uuid-1", **claims},
+        )
+
+    return verifier, sign
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"client_id": _COGNITO_ENV["OIDC_CLIENT_ID"]},
+        {"client_id": _COGNITO_ENV["OIDC_CLIENT_ID"], "aud": _COGNITO_ENV["OIDC_CLIENT_ID"]},
+    ],
+    ids=["cognito-access-token", "with-aud"],
+)
+def test_cognito_access_token_for_our_client_is_accepted(cognito_signer, claims):
+    verifier, sign = cognito_signer
+
+    accepted = asyncio.run(verifier.verify_token(sign(**claims)))
+
+    assert accepted is not None
+    assert accepted.claims["sub"] == "uuid-1"
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"client_id": "some-other-app-client"},
+        {"aud": _COGNITO_ENV["OIDC_CLIENT_ID"]},
+    ],
+    ids=["foreign-client-id", "missing-client-id"],
+)
+def test_cognito_access_token_without_our_client_id_is_rejected(cognito_signer, claims):
+    """fastmcp 3.4 checks Cognito's ``client_id`` claim in place of ``aud``."""
+    verifier, sign = cognito_signer
+
+    assert asyncio.run(verifier.verify_token(sign(**claims))) is None

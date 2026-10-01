@@ -1,5 +1,8 @@
 """End-to-end test for the OAuth redirect attack reported by security researcher.
 
+Covers the upstream Plane-OAuth provider. The Cognito path, including clients
+stored before the allowlist was set, is covered in test_redirect_allowlist.py.
+
 Attack scenario:
   1. Attacker registers a malicious OAuth client with redirect_uri=https://attacker.com/steal
   2. Attacker crafts an authorization URL and tricks victim into visiting it
@@ -8,8 +11,8 @@ Attack scenario:
   5. Attacker exchanges code for access token cross-origin (enabled by CORS credentials:true)
   6. Attacker has full read/write access to victim's Plane workspace
 
-This test replays the attack against the real server app and verifies each
-security fix blocks the corresponding step.
+Since fastmcp 3.4 the attack stops at step 1: /register rejects any redirect_uri
+outside the allowlist. CORS still guards step 5.
 """
 
 import pytest
@@ -79,15 +82,11 @@ def client(app):
 
 
 class TestOAuthRedirectAttack:
-    """Replay the full attack chain and verify each fix blocks it.
+    """Verify the attack is blocked at registration and at the CORS layer.
 
-    The server uses an OAuth proxy architecture: /authorize redirects to
-    upstream Plane OAuth (not directly to the client's redirect_uri). After
-    Plane approves, the server's /auth/callback handles the response and
-    only then redirects to the MCP client's redirect_uri.
-
-    The allowed_client_redirect_uris patterns restrict which client URIs
-    the proxy will redirect to after the upstream callback completes.
+    The allowed_client_redirect_uris patterns restrict which client URIs can
+    be registered and which the proxy will redirect to after the upstream
+    callback completes.
     """
 
     def _register(self, client: TestClient, redirect_uri: str):

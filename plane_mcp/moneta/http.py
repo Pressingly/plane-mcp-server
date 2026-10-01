@@ -41,6 +41,10 @@ from plane_mcp.tools import register_tools
 logger = logging.getLogger("fastmcp.plane_mcp.moneta")
 
 _DEFAULT_HTTP_PORT = 8211
+# Cognito sends no refresh_expires_in, so fastmcp falls back to this for the
+# session's refresh lifetime and its Valkey retention. fastmcp 3.4 raised the
+# default from 30 days to 1 year; this keeps the 30-day cap plane-mcp had on 3.2.
+_REFRESH_TOKEN_FALLBACK_SECONDS = 30 * 24 * 60 * 60
 
 def enabled() -> bool:
     """True when the Cognito HTTP path should handle ``http`` mode."""
@@ -57,10 +61,14 @@ def _allowed_client_redirect_uris() -> list[str] | None:
     """Parse MCP_ALLOWED_CLIENT_REDIRECT_URIS (comma-separated; fnmatch wildcards).
 
     Unset/empty → None, so SMBs can deploy with any MCP client without
-    pre-configuring callback URLs: registration accepts any redirect_uri, and
-    /authorize redirects only to a URI that client registered (loopback on any
-    port). A list is enforced at both /register and /authorize, against every
-    stored client, including ones registered while it was unset.
+    pre-configuring callback URLs. Registration then accepts any redirect_uri
+    except unsafe schemes (javascript:, data:, file:, vbscript:). /authorize
+    accepts the client's registered URI (loopback on any port), with two
+    exceptions: a client stored with a pattern list is held to that list, and
+    the OIDC_CLIENT_ID itself, used without registering, accepts any safe URI.
+
+    A list is enforced at both /register and /authorize and replaces every
+    stored client's patterns, including clients registered while it was unset.
     """
     raw = os.getenv("MCP_ALLOWED_CLIENT_REDIRECT_URIS", "").strip()
     if not raw:
@@ -109,6 +117,7 @@ def get_cognito_http_mcp() -> FastMCP:
         # None → FastMCP keeps its encrypted-file default (see moneta.storage).
         client_storage=build_oauth_storage(),
         jwt_signing_key=jwt_signing_key,
+        fallback_refresh_token_expiry_seconds=_REFRESH_TOKEN_FALLBACK_SECONDS,
     )
     upstream_auth_url = os.getenv("COGNITO_UPSTREAM_AUTH_URL", "").strip()
     if upstream_auth_url:
