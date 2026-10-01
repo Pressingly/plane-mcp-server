@@ -56,8 +56,11 @@ def enabled() -> bool:
 def _allowed_client_redirect_uris() -> list[str] | None:
     """Parse MCP_ALLOWED_CLIENT_REDIRECT_URIS (comma-separated; fnmatch wildcards).
 
-    Unset/empty → None (allow all), matching penpot-mcp's behaviour so SMBs
-    can deploy with any MCP client without pre-configuring callback URLs.
+    Unset/empty → None, so SMBs can deploy with any MCP client without
+    pre-configuring callback URLs: registration accepts any redirect_uri, and
+    /authorize redirects only to a URI that client registered (loopback on any
+    port). A list is enforced at both /register and /authorize, against every
+    stored client, including ones registered while it was unset.
     """
     raw = os.getenv("MCP_ALLOWED_CLIENT_REDIRECT_URIS", "").strip()
     if not raw:
