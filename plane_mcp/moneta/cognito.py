@@ -90,9 +90,9 @@ def _true_expires_in(token_response: dict[str, Any]) -> int | None:
     re-authorization. Deriving the value from the token's own ``exp`` restores the
     invariant: the client's token now expires when the upstream one does, and it
     renews through the refresh grant (which ``mpass-auth-proxy`` relays to Cognito)
-    rather than re-authorizing. Note this makes the client-facing token hourly too
-    — decoupling the two needs ``fastmcp_access_token_expiry_seconds``, absent from
-    the fastmcp 3.2.x line the sibling MCP servers pin, so it is not used here.
+    rather than re-authorizing. Note this makes the client-facing token hourly too;
+    fastmcp's ``fastmcp_access_token_expiry_seconds`` could decouple the two, but it
+    is deliberately left unset here.
 
     Returns ``None`` when the lifetime can't be determined, leaving the upstream
     value untouched.
@@ -164,14 +164,15 @@ class PlaneCognitoProvider(AWSCognitoProvider):
       (see :func:`_true_expires_in`).
     * :meth:`_extract_upstream_claims` decodes the id_token at token-exchange
       time and returns ``{id_token, email, cognito:username}``.
-    * :meth:`load_access_token` re-attaches that on **every inbound request**.
-      This is required because fastmcp 3.2.0's ``OAuthProxy.load_access_token`` is
-      a token-swap that returns the *upstream Cognito access token's* validation
-      result — it discards the ``upstream_claims`` embedded in the issued JWT, so
-      they never reach ``get_access_token().claims``. Without this override
-      :func:`plane_mcp.moneta.client.bearer_for` would fall back to the access
-      token (no ``email``; opaque UUID ``sub`` for federated users) and Plane
-      would provision the wrong account.
+    * :meth:`load_access_token` re-attaches that on **every inbound request**,
+      read from the stored upstream token set. fastmcp 3.4 also copies the
+      ``upstream_claims`` embedded in the issued JWT, but that copy is a snapshot
+      from issuance: a transparent upstream refresh updates only the stored token
+      set, so the JWT can carry an id_token older than the current one. Reading
+      the store forwards the latest id_token, and failing closed when it is
+      missing keeps :func:`plane_mcp.moneta.client.bearer_for` from falling back
+      to the access token (no ``email``; opaque UUID ``sub`` for federated users),
+      which would provision the wrong Plane account.
     """
 
     def _create_upstream_oauth_client(self) -> AsyncOAuth2Client:
@@ -223,7 +224,8 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         """Re-attach the upstream id_token to the validated access token.
 
         ``super().load_access_token`` (the token-swap) returns an ``AccessToken``
-        built from the upstream Cognito *access* token, so we re-resolve the
+        built from the upstream Cognito *access* token, carrying at most the
+        issuance-time ``upstream_claims`` snapshot from the JWT. We re-resolve the
         id_token from the stored token set and stash it under
         ``claims["upstream_claims"]`` where
         :func:`plane_mcp.moneta.client.bearer_for` reads it.
