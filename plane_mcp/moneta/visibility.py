@@ -95,8 +95,6 @@ ENABLED_TOOLS: frozenset[str] = frozenset(
         # Users
         "get_me",
         "get_workspace_members",
-        # PQL
-        "get_pql_reference",
     }
 )
 
