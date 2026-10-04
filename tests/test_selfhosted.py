@@ -17,6 +17,7 @@ from fastmcp import Client, FastMCP
 from plane.models.query_params import RetrieveQueryParams
 
 import plane_mcp.tools.cycles as cycle_tools
+import plane_mcp.tools.modules as module_tools
 import plane_mcp.tools.work_items as work_item_tools
 from plane_mcp.client import PlaneClientContext
 from plane_mcp.moneta.selfhosted import (
@@ -83,12 +84,12 @@ def server(monkeypatch: pytest.MonkeyPatch) -> FastMCP:
 
 def wire(monkeypatch: pytest.MonkeyPatch, fake: FakePlane) -> SelfHostedPlaneClient:
     client = SelfHostedPlaneClient(base_url="https://pm.example", api_key="k")
-    for resource in (client.work_items, client.cycles):
+    for resource in (client.work_items, client.cycles, client.modules):
         monkeypatch.setattr(resource, "_get", fake.get)
         monkeypatch.setattr(resource, "_patch", fake.patch)
     context = PlaneClientContext(client=client, workspace_slug="acme")
-    monkeypatch.setattr(work_item_tools, "get_plane_client_context", lambda: context)
-    monkeypatch.setattr(cycle_tools, "get_plane_client_context", lambda: context)
+    for module in (work_item_tools, cycle_tools, module_tools):
+        monkeypatch.setattr(module, "get_plane_client_context", lambda: context)
     return client
 
 
@@ -127,6 +128,13 @@ def test_expanded_foreign_key_collapses_to_id_and_keeps_the_object():
     normalized = normalize_work_item_detail(fork_item(parent=parent))
     assert normalized["parent"] == "parent-uuid"
     assert normalized["parent_detail"] == parent
+
+
+def test_expanded_null_foreign_key_without_an_id_keeps_no_detail():
+    estimate = {"key": None, "value": "", "description": ""}
+    normalized = normalize_work_item_detail(fork_item(estimate_point=estimate))
+    assert normalized["estimate_point"] is None
+    assert "estimate_point_detail" not in normalized
 
 
 def test_collapse_ignores_fields_that_already_accept_objects():
@@ -212,19 +220,31 @@ def test_remove_work_item_assignee_sends_the_update(server, monkeypatch):
     assert fake.patches == [(f"acme/projects/{PROJECT}/work-items/{ITEM}", {"assignees": []})]
 
 
-def test_list_work_items_tolerates_expanded_parent(server, monkeypatch):
-    page = {
-        "results": [fork_item(parent={})],
-        "count": 1,
-        "total_count": 1,
-        "total_results": 1,
+def fork_page(*items: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "results": list(items),
+        "count": len(items),
+        "total_count": len(items),
+        "total_results": len(items),
         "total_pages": 1,
         "next_cursor": "25:1:0",
         "prev_cursor": "25:-1:1",
         "next_page_results": False,
         "prev_page_results": False,
     }
-    wire(monkeypatch, FakePlane(page))
+
+
+EXPANDED_NULL_FOREIGN_KEYS = {
+    "parent": {},
+    "created_by": {},
+    "updated_by": {},
+    "workspace": {},
+    "estimate_point": {"key": None, "value": "", "description": ""},
+}
+
+
+def test_list_work_items_tolerates_expanded_parent(server, monkeypatch):
+    wire(monkeypatch, FakePlane(fork_page(fork_item(parent={}))))
 
     result = call(server, "list_work_items", {"project_id": PROJECT, "expand": "parent"})
 
@@ -262,3 +282,26 @@ def test_retrieve_with_expanded_parent_round_trips_through_the_client(server, mo
     assert result.data is not None
     assert result.structured_content["parent"] == "parent-uuid"
     assert result.structured_content["parent_detail"] == parent
+
+
+@pytest.mark.parametrize(
+    ("tool", "container_arg", "endpoint"),
+    [
+        ("list_cycle_work_items", {"cycle_id": "cycle-uuid"}, "cycles/cycle-uuid/cycle-issues"),
+        ("list_module_work_items", {"module_id": "module-uuid"}, "modules/module-uuid/module-issues"),
+    ],
+)
+def test_container_work_item_lists_tolerate_expanded_null_foreign_keys(
+    server, monkeypatch, tool, container_arg, endpoint
+):
+    fake = FakePlane(fork_page(fork_item(**EXPANDED_NULL_FOREIGN_KEYS)))
+    wire(monkeypatch, fake)
+    expand = ",".join(EXPANDED_NULL_FOREIGN_KEYS)
+
+    result = call(server, tool, {"project_id": PROJECT, **container_arg, "expand": expand})
+
+    item = result.structured_content["results"][0]
+    assert {field: item[field] for field in EXPANDED_NULL_FOREIGN_KEYS} == dict.fromkeys(EXPANDED_NULL_FOREIGN_KEYS)
+    assert not any(key.endswith("_detail") for key in item)
+    assert fake.gets[0][0] == f"acme/projects/{PROJECT}/{endpoint}"
+    assert fake.gets[0][1]["expand"] == expand

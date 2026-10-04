@@ -10,6 +10,8 @@ plane-sdk's models are written against Plane Cloud. Our self-hosted Plane
   retrieve before they update — the update was never sent (FOSS-224).
 * ``BaseSerializer`` expands a foreign key into a nested object (``parent`` becomes
   ``{}`` when unset), while the SDK types those fields ``str | None``.
+  The cycle-issue and module-issue lists serve work items through the same
+  serializer, so they get the same treatment.
 * ``cycle_view=current`` on the cycle list returns a bare list, and
   ``external_id`` + ``external_source`` on the work-item list returns a single
   object; the SDK expects a paginated envelope for both.
@@ -26,9 +28,11 @@ from typing import Any
 
 from plane import PlaneClient
 from plane.api.cycles import Cycles
+from plane.api.modules import Modules
 from plane.api.work_items import WorkItems
 from plane.api.work_items.base import prepare_work_item_params
-from plane.models.cycles import PaginatedCycleResponse
+from plane.models.cycles import PaginatedCycleResponse, PaginatedCycleWorkItemResponse
+from plane.models.modules import PaginatedModuleWorkItemResponse
 from plane.models.query_params import RetrieveQueryParams, WorkItemQueryParams
 from plane.models.work_items import PaginatedWorkItemResponse, WorkItem, WorkItemDetail
 
@@ -44,12 +48,17 @@ _WORK_ITEM_DETAIL_ID_FIELDS = _id_typed_fields(WorkItemDetail)
 
 
 def collapse_expanded_fields(payload: Mapping[str, Any], id_fields: frozenset[str]) -> dict[str, Any]:
-    """Reduce expanded objects on ``str``-typed fields to their id, keeping the object as ``<field>_detail``."""
+    """Reduce expanded objects on ``str``-typed fields to their id, keeping the object as ``<field>_detail``.
+
+    A null foreign key can still expand to a non-empty object without an id (a
+    serializer with writable fields renders its defaults), so ``_detail`` is only
+    kept when the object identifies something.
+    """
     collapsed: dict[str, Any] = {}
     for key, value in payload.items():
         if key in id_fields and isinstance(value, Mapping):
             collapsed[key] = value.get("id")
-            if value:
+            if value.get("id"):
                 collapsed[f"{key}_detail"] = dict(value)
         else:
             collapsed[key] = value
@@ -152,11 +161,40 @@ class SelfHostedCycles(Cycles):
         response = self._get(f"{workspace_slug}/projects/{project_id}/cycles", params=params)
         return PaginatedCycleResponse.model_validate(as_page(response))
 
+    def list_work_items(
+        self,
+        workspace_slug: str,
+        project_id: str,
+        cycle_id: str,
+        params: WorkItemQueryParams | Mapping[str, Any] | None = None,
+    ) -> PaginatedCycleWorkItemResponse:
+        response = self._get(
+            f"{workspace_slug}/projects/{project_id}/cycles/{cycle_id}/cycle-issues",
+            params=prepare_work_item_params(params),
+        )
+        return PaginatedCycleWorkItemResponse.model_validate(normalize_work_item_page(response))
+
+
+class SelfHostedModules(Modules):
+    def list_work_items(
+        self,
+        workspace_slug: str,
+        project_id: str,
+        module_id: str,
+        params: WorkItemQueryParams | Mapping[str, Any] | None = None,
+    ) -> PaginatedModuleWorkItemResponse:
+        response = self._get(
+            f"{workspace_slug}/projects/{project_id}/modules/{module_id}/module-issues",
+            params=prepare_work_item_params(params),
+        )
+        return PaginatedModuleWorkItemResponse.model_validate(normalize_work_item_page(response))
+
 
 class SelfHostedPlaneClient(PlaneClient):
-    """``PlaneClient`` whose work-item and cycle resources accept self-hosted response shapes."""
+    """``PlaneClient`` whose work-item, cycle and module resources accept self-hosted response shapes."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.work_items = SelfHostedWorkItems(self.config)
         self.cycles = SelfHostedCycles(self.config)
+        self.modules = SelfHostedModules(self.config)
