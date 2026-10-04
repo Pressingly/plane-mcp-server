@@ -142,8 +142,8 @@ Upstream files touched (the entire upstream footprint):
 | `cognito.py` | `PlaneCognitoProvider(AWSCognitoProvider)` — captures the Cognito **id_token** and stashes `{id_token, email, cognito:username}` under the issued JWT's `upstream_claims`. |
 | `client.py` | `bearer_for(token, claims)` (forwards the id_token), `plane_request_auth()` (base_url + headers for raw **app-API** calls). |
 | `apitoken.py` | Mints/caches a Plane `APIToken` and builds the dual-header `PlaneClient` (see "The `/api/v1` 401 fix"). |
-| `selfhosted.py` | `SelfHostedPlaneClient` — work-item and cycle resources that normalise the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) before validating into the plane-sdk models. |
-| `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so the PQL list tools reject it with a `ToolError` instead of returning unfiltered results. |
+| `selfhosted.py` | `SelfHostedPlaneClient` — work-item, cycle and module resources that normalise the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) before validating into the plane-sdk models. |
+| `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so the PQL list tools reject it with a `ToolError` instead of returning unfiltered results, and PQL is stripped from the descriptions of those tools and `search_work_items`. |
 | `workspace.py` | `resolve_workspace(claim, env)` precedence resolver + `_fetch_workspaces()` (raw GET `/api/users/me/workspaces/`). |
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
