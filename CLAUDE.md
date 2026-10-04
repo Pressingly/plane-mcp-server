@@ -133,7 +133,7 @@ Upstream files touched (the entire upstream footprint):
 |---|---|
 | `__main__.py` | http mode → `moneta.http.run()` when `moneta.http.enabled()` (i.e. `COGNITO_USER_POOL_ID` set), else upstream Plane-OAuth+SSE |
 | `client.py` | `get_plane_client_context` calls `bearer_for(...)`, `resolve_workspace(...)`, and `build_plane_client(...)` |
-| `tools/__init__.py` | `register_moneta_tools(mcp)` + `add_workspace_arg(mcp)` + `apply_tool_visibility(mcp)` at the end of `register_tools`; `register_milestone_tools` is **not** called (milestones are unsupported by the community edition — the file itself stays byte-pristine) |
+| `tools/__init__.py` | `register_moneta_tools(mcp)` + `disable_pql(mcp)` + `add_workspace_arg(mcp)` + `apply_tool_visibility(mcp)` at the end of `register_tools`; `register_milestone_tools` is **not** called (milestones are unsupported by the community edition — the file itself stays byte-pristine) |
 
 ## `plane_mcp/moneta/` modules
 
@@ -142,6 +142,8 @@ Upstream files touched (the entire upstream footprint):
 | `cognito.py` | `PlaneCognitoProvider(AWSCognitoProvider)` — captures the Cognito **id_token** and stashes `{id_token, email, cognito:username}` under the issued JWT's `upstream_claims`. |
 | `client.py` | `bearer_for(token, claims)` (forwards the id_token), `plane_request_auth()` (base_url + headers for raw **app-API** calls). |
 | `apitoken.py` | Mints/caches a Plane `APIToken` and builds the dual-header `PlaneClient` (see "The `/api/v1` 401 fix"). |
+| `selfhosted.py` | `SelfHostedPlaneClient` — work-item and cycle resources that normalise the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) before validating into the plane-sdk models. |
+| `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so the PQL list tools reject it with a `ToolError` instead of returning unfiltered results. |
 | `workspace.py` | `resolve_workspace(claim, env)` precedence resolver + `_fetch_workspaces()` (raw GET `/api/users/me/workspaces/`). |
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
