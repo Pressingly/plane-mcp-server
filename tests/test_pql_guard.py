@@ -9,13 +9,16 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
+import plane_mcp.tools.cycles as cycle_tools
+import plane_mcp.tools.modules as module_tools
 import plane_mcp.tools.work_items as work_item_tools
 from plane_mcp.moneta.pql_guard import (
+    PQL_POINTING_TOOLS,
     PQL_TOOLS,
     PQL_UNSUPPORTED_DESCRIPTION,
     PQL_UNSUPPORTED_ERROR,
-    PQL_UNSUPPORTED_NOTE,
     disable_pql,
+    strip_pql_mentions,
 )
 from plane_mcp.tools import register_tools
 
@@ -24,7 +27,7 @@ PROJECT = "11111111-1111-1111-1111-111111111111"
 
 @pytest.fixture()
 def server(monkeypatch: pytest.MonkeyPatch) -> FastMCP:
-    monkeypatch.setenv("PLANE_MCP_ENABLED_TOOLS", ",".join(PQL_TOOLS | {"get_pql_reference"}))
+    monkeypatch.setenv("PLANE_MCP_ENABLED_TOOLS", ",".join(PQL_TOOLS | PQL_POINTING_TOOLS))
     mcp = FastMCP("t")
     register_tools(mcp)
     return mcp
@@ -54,7 +57,14 @@ def test_every_pql_tool_advertises_pql_as_unsupported(server):
         properties = tools[name].inputSchema["properties"]
         assert properties["pql"]["description"] == PQL_UNSUPPORTED_DESCRIPTION, name
         assert "workspace_slug" in properties, name
-        assert tools[name].description.endswith(PQL_UNSUPPORTED_NOTE), name
+        assert "PQL" not in tools[name].description, name
+        assert "list_workspace_work_items" not in tools[name].description, name
+
+
+def test_search_work_items_no_longer_points_at_pql(server):
+    description = list_tools(server)["search_work_items"].description
+    assert "PQL" not in description
+    assert "free-text" in description
 
 
 @pytest.mark.parametrize("tool", sorted(PQL_TOOLS))
@@ -62,7 +72,8 @@ def test_pql_raises_instead_of_reaching_plane(server, monkeypatch, tool):
     def unreachable():
         raise AssertionError("pql must be rejected before a Plane client is built")
 
-    monkeypatch.setattr(work_item_tools, "get_plane_client_context", unreachable)
+    for module in (work_item_tools, cycle_tools, module_tools):
+        monkeypatch.setattr(module, "get_plane_client_context", unreachable)
     args = {"project_id": PROJECT, "cycle_id": "c", "module_id": "m", "pql": "assignee = currentUser()"}
     schema = list_tools(server)[tool].inputSchema["properties"]
 
@@ -84,15 +95,26 @@ def test_blank_pql_is_treated_as_unset(server, monkeypatch):
     assert seen == [True]
 
 
-def test_error_tells_the_model_how_to_proceed():
+def test_error_tells_the_model_how_to_proceed_without_naming_a_dead_tool():
     assert "without pql" in PQL_UNSUPPORTED_ERROR
+    assert "list_workspace_work_items" not in PQL_UNSUPPORTED_ERROR
 
 
-def test_get_pql_reference_is_hidden_by_default(monkeypatch):
+def test_strip_pql_mentions_keeps_the_rest_of_the_description():
+    description = (
+        "List work items in a cycle with optional PQL filtering.\n"
+        "For workspace-wide filtering use list_workspace_work_items instead.\n\n"
+        "Paginated by cursor."
+    )
+    assert strip_pql_mentions(description) == "List work items in a cycle.\n\nPaginated by cursor."
+
+
+@pytest.mark.parametrize("tool", ["get_pql_reference", "list_workspace_work_items"])
+def test_tools_the_server_cannot_serve_are_hidden_by_default(monkeypatch, tool):
     monkeypatch.delenv("PLANE_MCP_ENABLED_TOOLS", raising=False)
     mcp = FastMCP("t")
     register_tools(mcp)
-    assert "get_pql_reference" not in list_tools(mcp)
+    assert tool not in list_tools(mcp)
 
 
 def test_disable_pql_is_idempotent(monkeypatch):
