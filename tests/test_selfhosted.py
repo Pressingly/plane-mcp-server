@@ -171,6 +171,7 @@ def test_retrieve_work_item_accepts_bare_uuid_relations(server, monkeypatch):
 
     result = call(server, "retrieve_work_item", {"project_id": PROJECT, "work_item_id": ITEM})
 
+    assert result.data is not None
     assert result.structured_content["assignees"][0]["id"] == USER
     assert result.structured_content["labels"][0]["id"] == LABEL
     assert result.structured_content["parent"] is None
@@ -250,3 +251,14 @@ def test_list_cycles_accepts_a_bare_list(server, monkeypatch):
 
     assert [cycle["name"] for cycle in result.structured_content["result"]] == ["Sprint 42"]
     assert fake.gets == [(f"acme/projects/{PROJECT}/cycles", {"cycle_view": "current"})]
+
+
+def test_retrieve_with_expanded_parent_round_trips_through_the_client(server, monkeypatch):
+    parent = {"id": "parent-uuid", "sequence_id": 3, "project_id": PROJECT}
+    wire(monkeypatch, FakePlane(fork_item(parent=parent)))
+
+    result = call(server, "retrieve_work_item", {"project_id": PROJECT, "work_item_id": ITEM, "expand": "parent"})
+
+    assert result.data is not None
+    assert result.structured_content["parent"] == "parent-uuid"
+    assert result.structured_content["parent_detail"] == parent
