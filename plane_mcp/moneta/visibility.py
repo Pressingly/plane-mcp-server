@@ -45,7 +45,6 @@ ENABLED_TOOLS: frozenset[str] = frozenset(
         "add_work_item_label",
         "create_work_item",
         "list_work_items",
-        "list_workspace_work_items",
         "remove_work_item_assignee",
         # Paired with add_work_item_label — without it the only way to drop a
         # label is update_work_item(labels=...), which replaces the whole list.
@@ -95,8 +94,6 @@ ENABLED_TOOLS: frozenset[str] = frozenset(
         # Users
         "get_me",
         "get_workspace_members",
-        # PQL
-        "get_pql_reference",
     }
 )
 

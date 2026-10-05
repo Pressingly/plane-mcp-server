@@ -7,6 +7,7 @@ import logging
 from fastmcp import FastMCP
 
 from plane_mcp.moneta.inject import add_workspace_arg
+from plane_mcp.moneta.pql_guard import disable_pql
 from plane_mcp.moneta.tools import register_moneta_tools
 from plane_mcp.moneta.visibility import apply_tool_visibility
 from plane_mcp.tools.cycles import register_cycle_tools
@@ -51,6 +52,8 @@ def register_tools(mcp: FastMCP) -> None:
     # is left byte-pristine for a future upstream pull.
     register_pql_tools(mcp)
     register_moneta_tools(mcp)  # Moneta fork: list_workspaces
+
+    disable_pql(mcp)  # Moneta fork: self-hosted Plane ignores pql; reject it instead of returning unfiltered lists
 
     add_workspace_arg(mcp)  # Moneta fork: inject optional workspace_slug on every workspace-scoped tool
 

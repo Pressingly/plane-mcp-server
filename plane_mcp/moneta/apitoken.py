@@ -49,6 +49,7 @@ from plane_mcp.moneta.cognito import (
     ID_TOKEN_KEY,
     UPSTREAM_CLAIMS_KEY,
 )
+from plane_mcp.moneta.selfhosted import SelfHostedPlaneClient
 
 logger = get_logger(__name__)
 
@@ -287,10 +288,13 @@ def build_plane_client(
 
     Otherwise behaves like upstream: Bearer-only (Plane-OAuth) or ``X-Api-Key``-only
     (PAT / stdio env).
+
+    Every path returns a :class:`~plane_mcp.moneta.selfhosted.SelfHostedPlaneClient`,
+    which accepts the response shapes the self-hosted Plane API returns.
     """
     minted_key = plane_api_key(claims) if access_token else None
     if minted_key and access_token:
-        client = PlaneClient(base_url=base_url, access_token=access_token)
+        client = SelfHostedPlaneClient(base_url=base_url, access_token=access_token)
         client.config.api_key = minted_key  # dual-header: Bearer (mPass) + X-Api-Key (DRF)
         # Tag the identity onto the Configuration rather than a ContextVar: the tag then
         # travels with the very object whose api_key it describes. Configuration is built
@@ -304,6 +308,6 @@ def build_plane_client(
         return client
     if access_token:
         logger.debug("build_plane_client: Bearer-only (no minted key — Plane-OAuth/PAT path or mint failed)")
-        return PlaneClient(base_url=base_url, access_token=access_token)
+        return SelfHostedPlaneClient(base_url=base_url, access_token=access_token)
     logger.debug("build_plane_client: api_key-only (PAT / stdio env)")
-    return PlaneClient(base_url=base_url, api_key=api_key)
+    return SelfHostedPlaneClient(base_url=base_url, api_key=api_key)
