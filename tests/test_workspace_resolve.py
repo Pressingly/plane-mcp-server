@@ -39,3 +39,32 @@ def test_blank_candidates_are_ignored():
         assert resolve_workspace("  ", "envws") == "envws"
     finally:
         ws.reset_override(token)
+
+
+COGNITO_CLAIMS = {"upstream_claims": {"email": "u@example.com"}}
+
+
+def test_cognito_token_falls_back_to_the_environment():
+    assert ws.workspace_for(COGNITO_CLAIMS, "envws") == "envws"
+
+
+def test_stdio_falls_back_to_the_environment():
+    assert ws.workspace_for(None, "envws") == "envws"
+
+
+def test_cognito_token_without_any_workspace_raises_the_guiding_error():
+    with pytest.raises(WorkspaceError, match="list_workspaces"):
+        ws.workspace_for(COGNITO_CLAIMS, "")
+
+
+def test_plane_token_is_bound_to_its_claim_even_when_empty():
+    assert ws.workspace_for({"auth_method": "oauth"}, "envws") == ""
+    assert ws.workspace_for({"workspace_slug": "claimws"}, "envws") == "claimws"
+
+
+def test_arg_override_wins_over_a_plane_token_claim():
+    token = ws.set_override("acme")
+    try:
+        assert ws.workspace_for({"workspace_slug": "claimws"}, "envws") == "acme"
+    finally:
+        ws.reset_override(token)

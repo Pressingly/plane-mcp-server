@@ -213,7 +213,8 @@ def test_a_call_with_no_action_never_reaches_plane():
 
 
 def test_a_clean_call_is_not_blocked():
-    answer = _call("workitem", {"action": "count", "project_id": "p", "pql": 'priority = "urgent"'})
+    # Moneta fork: count and pql are not on this server's surface, so a curated action stands in.
+    answer = _call("workitem", {"action": "search", "query": "urgent"})
     assert "does not take" not in answer
     assert "403" in answer, "the call did not reach Plane"
 

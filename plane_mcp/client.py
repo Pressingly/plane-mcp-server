@@ -10,7 +10,7 @@ from plane import PlaneClient
 
 from plane_mcp.moneta.apitoken import build_plane_client
 from plane_mcp.moneta.client import bearer_for
-from plane_mcp.moneta.workspace import resolve_workspace
+from plane_mcp.moneta.workspace import workspace_for
 
 logger = get_logger(__name__)
 
@@ -24,9 +24,9 @@ class PlaneClientContext(NamedTuple):
 
 def _workspace_slug(token: AccessToken | None) -> str:
     """The slug a connection is bound to: its token's claim, else the environment."""
-    if token:
-        return token.claims.get("workspace_slug", "")
-    return os.getenv("PLANE_WORKSPACE_SLUG", "")
+    # Moneta fork: the per-call workspace_slug arg (plane_mcp.moneta.inject) wins, and a
+    # Cognito token, which carries no slug claim, falls back to the environment.
+    return workspace_for(token.claims if token else None, os.getenv("PLANE_WORKSPACE_SLUG", ""))
 
 
 def _connected_via(token: AccessToken | None) -> str:
@@ -75,6 +75,7 @@ def get_plane_client_context() -> PlaneClientContext:
 
     # Get access token from the OAuth provider (which handles all auth methods)
     stored_access_token: AccessToken | None = get_access_token()
+    workspace_slug = _workspace_slug(stored_access_token)
     if stored_access_token:
         # Determine authentication method to use appropriate PlaneClient constructor
         auth_method = _connected_via(stored_access_token)
@@ -88,16 +89,6 @@ def get_plane_client_context() -> PlaneClientContext:
             # instead of the FastMCP reference JWT, so Plane's mPass chain resolves
             # the same user as the web login. No-op for non-Cognito paths.
             access_token = bearer_for(token, stored_access_token.claims)
-
-    # Moneta fork: resolve the target workspace. Precedence: the per-call
-    # workspace_slug tool arg (injected by plane_mcp.moneta.inject and stashed in a
-    # ContextVar) > the token's workspace_slug claim (PAT X-Workspace-Slug /
-    # Plane-OAuth installation) > PLANE_WORKSPACE_SLUG env. Per-call means
-    # concurrent Claude conversations stay isolated. Raises a guiding error if none.
-    workspace_slug = resolve_workspace(
-        stored_access_token.claims.get("workspace_slug") if stored_access_token else None,
-        os.getenv("PLANE_WORKSPACE_SLUG", ""),
-    )
 
     # Moneta fork: build the client. On the Cognito path this sends BOTH the
     # id_token Bearer (satisfies mPass on /api/v1) AND a minted Plane X-Api-Key

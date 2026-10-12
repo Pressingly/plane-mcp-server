@@ -9,7 +9,9 @@ from mcp.types import Icon
 
 from plane_mcp.auth import PlaneHeaderAuthProvider, PlaneOAuthProvider
 from plane_mcp.instructions import SERVER_INSTRUCTIONS
-from plane_mcp.middleware import CoerceArguments, PlaneLoggingMiddleware, ValidateActionArguments
+from plane_mcp.middleware import CoerceArguments, PlaneLoggingMiddleware
+from plane_mcp.moneta.middleware import ValidateActionArguments  # Moneta fork: tolerates injected workspace_slug
+from plane_mcp.moneta.surface import apply_moneta_surface
 from plane_mcp.storage import build_token_store
 from plane_mcp.tools import register_tools
 
@@ -60,7 +62,7 @@ def _configured(mcp: FastMCP) -> FastMCP:
     mcp.add_middleware(CoerceArguments())
     mcp.add_middleware(ValidateActionArguments())
     register_tools(mcp)
-    return mcp
+    return apply_moneta_surface(mcp)  # Moneta fork: list_workspaces, pql guard, workspace_slug, curated surface
 
 
 def get_oauth_mcp(base_path: str = "/") -> FastMCP:
