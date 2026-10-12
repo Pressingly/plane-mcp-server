@@ -45,8 +45,10 @@ PQL_UNSUPPORTED_ERROR = (
     "state; pass expand=state to get the state group), using order_by and cursor to page."
 )
 
-_UNSCOPED_LIST_NOTE = " -- omit project_id to search the whole workspace"
-_SCOPED_LIST_NOTE = " -- project_id is required on this server"
+_UNSCOPED_LIST = (
+    ("  list (no required params; optional project_id, ", "  list (project_id; optional "),
+    (" -- omit project_id to search the whole workspace", ""),
+)
 
 _PQL_IN_OPTIONAL = (
     (re.compile(r"; optional pql\)"), ")"),
@@ -64,13 +66,12 @@ def _without_pql_param(line: str) -> str:
 def strip_pql_mentions(description: str) -> str:
     """Remove PQL guidance from a tool description: the field hint, the ``pql`` param, any line naming PQL.
 
-    The workspace-wide list goes with it: on this server it is a 404, not a search.
+    The workspace-wide list goes with it: on this server it is a 404, not a search, so the
+    ``list`` line names project_id as required.
     """
-    text = (
-        description.replace(f" {PQL_FIELD_HINT}", "")
-        .replace(PQL_FIELD_HINT, "")
-        .replace(_UNSCOPED_LIST_NOTE, _SCOPED_LIST_NOTE)
-    )
+    text = description.replace(f" {PQL_FIELD_HINT}", "").replace(PQL_FIELD_HINT, "")
+    for unscoped, scoped in _UNSCOPED_LIST:
+        text = text.replace(unscoped, scoped)
     lines = (_without_pql_param(line) for line in text.split("\n"))
     return "\n".join(line for line in lines if "PQL" not in line).strip()
 

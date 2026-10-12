@@ -67,8 +67,10 @@ def test_every_pql_tool_advertises_pql_as_unsupported(server):
 
 def test_workitem_list_no_longer_offers_the_workspace_wide_list(server):
     description = list_tools(server)["workitem"].description
+    list_line = next(line for line in description.split("\n") if line.startswith("  list ("))
     assert "omit project_id" not in description
-    assert "project_id is required on this server" in description
+    assert list_line.startswith("  list (project_id; optional ")
+    assert "project_id," not in list_line.split("optional", 1)[1]
 
 
 @pytest.mark.parametrize("tool", sorted(PQL_TOOLS))
