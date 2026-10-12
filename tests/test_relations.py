@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 
 import plane_mcp.client as client_module
 import plane_mcp.tools.workitem_relation as relation_tools
@@ -101,7 +102,11 @@ def test_relation_type_enum_and_description_name_every_type(server):
     assert SELF_HOSTED_FOOTER in tool.description
     assert "list_definitions" not in tool.description
     create_line = next(line for line in tool.description.split("\n") if line.startswith("  create ("))
-    assert create_line.endswith("-- pass relation_type;")
+    assert create_line.endswith("-- pass relation_type.")
+    assert "relation_definition" not in tool.description
+    assert set(tool.inputSchema["properties"]["action"]["enum"]) == {"list", "create"}
+    assert "is_dependency" not in tool.inputSchema["properties"]
+    assert "is_dependency" not in tool.description
     assert "workspace_slug" in tool.inputSchema["properties"]
 
 
@@ -192,3 +197,76 @@ def test_list_returns_relates_to_and_duplicate(server, monkeypatch):
     dependencies = result["dependencies"]
     assert dependencies["relates_to"] == [{"id": OTHER, "project_id": PROJECT, "relation_type": "relates_to"}]
     assert dependencies["duplicate"][0]["relation_type"] == "duplicate"
+
+
+def test_delete_is_refused_with_the_reason(server, monkeypatch):
+    fake = FakeRelations()
+    wire(monkeypatch, fake)
+
+    for tool, args in (
+        ("workitem_relation", {"action": "delete", "project_id": PROJECT, "workitem_id": ITEM}),
+        ("remove_work_item_relation", {"project_id": PROJECT, "work_item_id": ITEM, "related_work_item_id": OTHER}),
+    ):
+        with pytest.raises(ToolError, match="Removing a relation is not supported on this Plane server"):
+            call(server, tool, args)
+    assert fake.posts == []
+
+
+def test_custom_relation_arguments_are_refused(server, monkeypatch):
+    wire(monkeypatch, FakeRelations())
+
+    with pytest.raises(ToolError, match="custom relation definitions are not available"):
+        call(
+            server,
+            "workitem_relation",
+            {
+                "action": "create",
+                "project_id": PROJECT,
+                "workitem_id": ITEM,
+                "workitem_ids": [OTHER],
+                "relation_definition_id": "d",
+            },
+        )
+
+
+def test_restored_create_runs_off_the_loop_with_the_call_context(server, monkeypatch):
+    """The SDK call runs in a worker thread and still sees the per-call workspace and token."""
+    import threading
+
+    from fastmcp.server.dependencies import get_access_token
+
+    import plane_mcp.moneta.workspace as ws
+
+    seen: dict[str, Any] = {}
+    loop_thread = threading.get_ident()
+    sentinel_token = object()
+    monkeypatch.setattr(client_module, "get_access_token", lambda: sentinel_token)
+
+    def context():
+        seen["thread"] = threading.get_ident()
+        seen["workspace"] = ws.resolve_workspace(None, "")
+        seen["token"] = client_module.get_access_token()
+        fake = FakeRelations()
+        client = SelfHostedPlaneClient(base_url="https://pm.example", api_key="k")
+        monkeypatch.setattr(client.work_items.relations, "_post", fake.post)
+        return PlaneClientContext(client=client, workspace_slug=seen["workspace"])
+
+    monkeypatch.setattr(client_module, "get_plane_client_context", context)
+    assert get_access_token  # the real dependency is replaced above; imported to document what is checked
+
+    call(
+        server,
+        "workitem_relation",
+        {
+            "action": "create",
+            "project_id": PROJECT,
+            "workitem_id": ITEM,
+            "workitem_ids": [OTHER],
+            "relation_type": "relates_to",
+            "workspace_slug": "other-ws",
+        },
+    )
+
+    assert seen["workspace"] == "other-ws"
+    assert seen["token"] is sentinel_token
+    assert seen["thread"] != loop_thread

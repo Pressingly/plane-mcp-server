@@ -2,8 +2,11 @@
 
 Moneta fork: upstream's flow creates epics and milestones, which the self-hosted
 community edition does not serve, so this keeps the project and work-item part.
-Tools are called by their pre-consolidation names, which still resolve, so this
-also covers that compatibility path.
+Tools are called by pre-consolidation names that upstream's ``LegacyNames`` still
+resolves (create_project, create_work_item, update_work_item, delete_work_item,
+delete_project), so this also covers that path. The fork's eight add/remove names
+resolve through ``plane_mcp.moneta.aliases`` and are covered by
+``tests/test_aliases.py``; not every retired name resolves on this server.
 
 Environment variables:
     PLANE_TEST_API_KEY:        API key for authentication (required)

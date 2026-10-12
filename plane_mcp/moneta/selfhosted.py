@@ -21,8 +21,9 @@ plane-sdk's models are written against Plane Cloud. Our self-hosted Plane
   they are served from the full routes (``projects/``, ``cycles/``, ``modules/``,
   ``members/``, ``relations/``) and reshaped into the models the SDK expects.
   ``members/`` applies no filters, so the member filters run here.
-* There is no workspace-wide work-item list, so an unscoped list fails with a
-  message naming ``project_id`` instead of an opaque 404.
+* There is no workspace-wide work-item list and no workspace state catalogue, so an
+  unscoped list, or a state call without a project, fails with a message naming
+  ``project_id`` instead of an opaque 404.
 
 :class:`SelfHostedPlaneClient` swaps in resource subclasses that normalise those
 payloads before validating them into the SDK's own models, so the tool return types
@@ -43,6 +44,7 @@ from plane.api.work_items import WorkItems
 from plane.api.work_items.base import prepare_work_item_params
 from plane.api.work_items.custom_relations import WorkItemCustomRelations
 from plane.api.work_items.dependencies import WorkItemDependencies
+from plane.api.workspace_states import WorkspaceStates
 from plane.api.workspaces import Workspaces
 from plane.models.cycles import PaginatedCycleLiteResponse, PaginatedCycleResponse, PaginatedCycleWorkItemResponse
 from plane.models.modules import PaginatedModuleLiteResponse, PaginatedModuleWorkItemResponse
@@ -72,8 +74,13 @@ NO_WORKSPACE_LIST = (
     "(`project list` returns the project ids) and list one project at a time."
 )
 
+NO_WORKSPACE_STATES = (
+    "This Plane server keeps workflow states per project and has no workspace state catalogue: "
+    "pass project_id (`project list` returns the project ids)."
+)
+
+# The fields UserLiteSerializer sends for each member, which are all a filter can match.
 MEMBER_TEXT_FILTERS = ("first_name", "last_name", "email", "display_name")
-MEMBER_FLAG_FILTERS = ("is_active", "is_bot")
 
 
 def _id_typed_fields(model: type) -> frozenset[str]:
@@ -171,21 +178,13 @@ def _contains(value: Any, wanted: str) -> bool:
 
 
 def member_matches(member: Mapping[str, Any], filters: Mapping[str, Any]) -> bool:
-    """Apply the members-lite filters the self-hosted ``members/`` route ignores.
+    """Apply the name and email filters the self-hosted ``members/`` route ignores.
 
-    Text filters match case-insensitively on a substring and flags match exactly,
-    all combined with AND. A flag the payload does not carry cannot be checked, so
-    it does not exclude the member.
+    They match case-insensitively on a substring and combine with AND. The payload
+    carries no role slug, activity or bot flag, so those filters are refused before
+    a call gets here (:mod:`plane_mcp.moneta.trims`), never treated as a match.
     """
-    for name in MEMBER_TEXT_FILTERS:
-        wanted = filters.get(name)
-        if wanted and not _contains(member.get(name), wanted):
-            return False
-    for name in MEMBER_FLAG_FILTERS:
-        wanted = filters.get(name)
-        if wanted is not None and name in member and member[name] is not wanted:
-            return False
-    return True
+    return all(_contains(member.get(name), filters[name]) for name in MEMBER_TEXT_FILTERS if filters.get(name))
 
 
 def dependency_groups(response: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -346,6 +345,15 @@ class SelfHostedWorkspaces(Workspaces):
         return PaginatedWorkspaceMemberResponse.model_validate(as_page(members))
 
 
+class SelfHostedWorkspaceStates(WorkspaceStates):
+    """The workspace state catalogue is Plane Cloud's; the self-hosted API has no ``states/`` at workspace level."""
+
+    def _unavailable(self, *args: Any, **kwargs: Any) -> Any:
+        raise ToolError(NO_WORKSPACE_STATES)
+
+    list = retrieve = retrieve_by_external_id = create = update = delete = _unavailable
+
+
 class SelfHostedPlaneClient(PlaneClient):
     """``PlaneClient`` whose resources speak the self-hosted Plane API's routes and response shapes."""
 
@@ -356,3 +364,4 @@ class SelfHostedPlaneClient(PlaneClient):
         self.modules = SelfHostedModules(self.config)
         self.projects = SelfHostedProjects(self.config)
         self.workspaces = SelfHostedWorkspaces(self.config)
+        self.workspace_states = SelfHostedWorkspaceStates(self.config)

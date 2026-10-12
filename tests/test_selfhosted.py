@@ -25,6 +25,7 @@ import plane_mcp.tools.cycle as cycle_tools
 import plane_mcp.tools.member as member_tools
 import plane_mcp.tools.module as module_tools
 import plane_mcp.tools.project as project_tools
+import plane_mcp.tools.state as state_tools
 import plane_mcp.tools.workitem as workitem_tools
 import plane_mcp.tools.workitem_relation as relation_tools
 from plane_mcp.client import PlaneClientContext
@@ -48,7 +49,7 @@ LABEL = "44444444-4444-4444-4444-444444444444"
 NEW_LABEL = "55555555-5555-5555-5555-555555555555"
 OTHER = "66666666-6666-6666-6666-666666666666"
 
-TOOL_MODULES = (workitem_tools, cycle_tools, module_tools, project_tools, member_tools, relation_tools)
+TOOL_MODULES = (workitem_tools, cycle_tools, module_tools, project_tools, member_tools, relation_tools, state_tools)
 
 
 def fork_item(**overrides: Any) -> dict[str, Any]:
@@ -109,6 +110,8 @@ def wire(monkeypatch: pytest.MonkeyPatch, fake: FakePlane) -> SelfHostedPlaneCli
         client.modules,
         client.projects,
         client.workspaces,
+        client.workspace_states,
+        client.states,
     )
     for resource in resources:
         monkeypatch.setattr(resource, "_get", fake.get)
@@ -209,12 +212,26 @@ def test_lite_query_drops_include_archived_and_renames_status():
     assert lite_query(None) is None
 
 
-def test_member_filters_match_substrings_and_flags():
-    member = {"first_name": "Usama", "email": "usama.sadiq@example.com", "is_bot": False}
+# The fields UserLiteSerializer sends, plus the integer role WorkspaceMemberAPIEndpoint adds.
+def fork_member(**overrides: Any) -> dict[str, Any]:
+    return {
+        "id": USER,
+        "first_name": "Usama",
+        "last_name": "Sadiq",
+        "email": "usama.sadiq@example.com",
+        "avatar": "",
+        "avatar_url": None,
+        "display_name": "usama",
+        "role": 20,
+        **overrides,
+    }
+
+
+def test_member_filters_match_names_and_email_only():
+    member = fork_member()
     assert member_matches(member, {"first_name": "usa", "email": "SADIQ"})
-    assert not member_matches(member, {"display_name": "usama"})
-    assert not member_matches(member, {"is_bot": True})
-    assert member_matches(member, {"is_active": True})
+    assert not member_matches(member, {"display_name": "hieu"})
+    assert member_matches(member, {"is_bot": True}), "flags are refused upstream of here, never matched"
 
 
 def test_dependency_groups_reshape_relation_pairs():
@@ -372,10 +389,7 @@ def test_list_modules_uses_the_full_route(server, monkeypatch):
 
 
 def test_workspace_members_are_filtered_here(server, monkeypatch):
-    members = [
-        {"id": USER, "first_name": "Usama", "display_name": "usama", "role": 20},
-        {"id": OTHER, "first_name": "Hieu", "display_name": "hieu", "role": 15},
-    ]
+    members = [fork_member(), fork_member(id=OTHER, first_name="Hieu", display_name="hieu", role=15)]
     fake = FakePlane(members)
     wire(monkeypatch, fake)
 
@@ -450,3 +464,67 @@ def test_container_work_item_lists_tolerate_expanded_null_foreign_keys(
     assert not any(key.endswith("_detail") for key in item)
     assert fake.gets[0][0] == f"acme/projects/{PROJECT}/{endpoint}"
     assert fake.gets[0][1]["expand"] == expand
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"role_slug": "admin"},
+        {"is_active": True},
+        {"is_bot": False},
+        {"cursor": "100:1:0"},
+        {"per_page": 10},
+        {"order_by": "display_name"},
+    ],
+)
+def test_unsupported_member_filters_are_refused(server, monkeypatch, arguments):
+    fake = FakePlane([fork_member()])
+    wire(monkeypatch, fake)
+
+    with pytest.raises(ToolError, match="Not supported"):
+        call(server, "member", {"action": "list_workspace", **arguments})
+    assert fake.gets == []
+
+
+def test_unsupported_member_filters_are_not_advertised(server):
+    async def run():
+        async with Client(server) as c:
+            return {t.name: t for t in await c.list_tools()}["member"]
+
+    tool = asyncio.run(run())
+    advertised = set(tool.inputSchema["properties"])
+    for name in ("role_slug", "is_active", "is_bot", "cursor", "per_page", "order_by"):
+        assert name not in advertised, name
+        assert name not in tool.description, name
+    assert "namespace" not in tool.description
+
+
+@pytest.mark.parametrize("arguments", [{"action": "list"}, {"action": "retrieve", "state_id": "state-uuid"}])
+def test_state_without_a_project_names_project_id(server, monkeypatch, arguments):
+    fake = FakePlane({"results": []})
+    wire(monkeypatch, fake)
+
+    with pytest.raises(ToolError, match="pass project_id"):
+        call(server, "state", arguments)
+    assert fake.gets == []
+
+
+def test_state_with_a_project_uses_the_project_route(server, monkeypatch):
+    fake = FakePlane(fork_page({"id": "state-uuid", "name": "Todo", "color": "#000", "group": "unstarted"}))
+    wire(monkeypatch, fake)
+
+    call(server, "state", {"action": "list", "project_id": PROJECT})
+
+    assert fake.gets[0][0] == f"acme/projects/{PROJECT}/states"
+
+
+def test_state_description_requires_project_id(server):
+    async def run():
+        async with Client(server) as c:
+            return {t.name: t for t in await c.list_tools()}["state"]
+
+    description = asyncio.run(run()).description
+    assert "  list (project_id; optional cursor, per_page);" in description
+    assert "  retrieve (project_id, state_id)." in description
+    assert "catalogue" not in description
+    assert "workspace scope" not in description

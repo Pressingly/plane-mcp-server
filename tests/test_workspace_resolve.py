@@ -57,9 +57,14 @@ def test_cognito_token_without_any_workspace_raises_the_guiding_error():
         ws.workspace_for(COGNITO_CLAIMS, "")
 
 
-def test_plane_token_is_bound_to_its_claim_even_when_empty():
-    assert ws.workspace_for({"auth_method": "oauth"}, "envws") == ""
-    assert ws.workspace_for({"workspace_slug": "claimws"}, "envws") == "claimws"
+def test_plane_token_uses_its_claim_stripped():
+    assert ws.workspace_for({"workspace_slug": " claimws "}, "envws") == "claimws"
+
+
+@pytest.mark.parametrize("claims", [{"auth_method": "oauth"}, {"workspace_slug": "  "}, {"workspace_slug": None}])
+def test_plane_token_with_a_blank_claim_raises_instead_of_borrowing_the_environment(claims):
+    with pytest.raises(WorkspaceError, match="workspace_slug"):
+        ws.workspace_for(claims, "envws")
 
 
 def test_arg_override_wins_over_a_plane_token_claim():

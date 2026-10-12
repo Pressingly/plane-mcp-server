@@ -19,6 +19,7 @@ from plane_mcp.moneta.visibility import (
     ENABLED_ACTIONS,
     _registered_tools,
     catalogue,
+    declared_arguments,
     keep_action_lines,
     parse_enabled_tools,
 )
@@ -152,3 +153,34 @@ async def test_workspace_slug_passes_action_validation(server: FastMCP, monkeypa
         with pytest.raises(ToolError, match="stop before Plane"):
             await client.call_tool("project", {"action": "list", "workspace_slug": "acme"})
     assert seen == ["acme"]
+
+
+@pytest.mark.anyio
+async def test_a_call_with_no_action_lists_only_the_curated_actions(server: FastMCP) -> None:
+    async with Client(server) as client:
+        result = await client.call_tool("workitem", {"project_id": "p"}, raise_on_error=False)
+    message = result.content[0].text
+    assert "requires an action" in message
+    offered = message.split("It takes: ")[1].rstrip(".").split(", ")
+    assert set(offered) == ENABLED_ACTIONS["workitem"]
+
+
+@pytest.mark.anyio
+async def test_hidden_actions_take_their_arguments_out_of_the_listing(server: FastMCP) -> None:
+    tools = await listed_tools(server)
+    for resource, actions in ENABLED_ACTIONS.items():
+        advertised = set(tools[resource].inputSchema["properties"])
+        assert advertised <= declared_arguments(resource, actions) | {"action", "workspace_slug"}, resource
+    assert "is_dependency" not in tools["workitem_relation"].inputSchema["properties"]
+    assert "network" in tools["project"].inputSchema["properties"], "update still takes it"
+    assert "modules" not in tools["project"].inputSchema["properties"], "only update_features takes it"
+
+
+@pytest.mark.anyio
+async def test_footers_name_no_refused_feature(server: FastMCP) -> None:
+    tools = await listed_tools(server)
+    assert "namespace" not in tools["member"].description
+    assert "role definitions" not in tools["member"].description
+    assert "parent is the UUID" not in tools["label"].description
+    assert "color" not in tools["label"].description
+    assert "type_id" not in tools["workitem"].description.split("\n\n", 2)[-1]

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any, get_args
 
+import anyio.to_thread
 from fastmcp import FastMCP
 from fastmcp.tools.base import Tool
 from fastmcp.tools.tool_transform import forward
@@ -71,7 +72,9 @@ def _create_relation(arguments: dict[str, Any]) -> list[dict[str, Any]]:
 
 async def _route_restored_types(**kwargs: Any):
     if _creates_restored_type(kwargs):
-        return _create_relation(kwargs)
+        # The SDK call blocks; run it off the event loop. anyio copies the context, so the
+        # per-call workspace override and the request's access token still reach it.
+        return await anyio.to_thread.run_sync(_create_relation, kwargs)
     return await forward(**kwargs)
 
 

@@ -9,11 +9,14 @@ tool call; :func:`resolve_workspace` reads it here.
 Precedence: per-call ``workspace_slug`` arg → token ``workspace_slug`` claim
 (PAT ``X-Workspace-Slug`` / Plane-OAuth installation) → ``PLANE_WORKSPACE_SLUG``
 env → guiding error. The environment is a default only where no credential names a
-workspace (stdio, and Cognito tokens, which carry no slug claim): a Plane-OAuth or
-PAT token's claim is authoritative even when empty, as upstream requires, so the
-connection never acts on a workspace its token was not granted. Because the arg is
-per-call (a fresh ContextVar scope per request), concurrent Claude conversations targeting different workspaces stay
-isolated — no shared/sticky state.
+workspace (stdio, and Cognito tokens, which carry no slug claim). A Plane-OAuth or
+PAT token never falls back to it: without the per-call arg it uses its own claim,
+and a blank claim is an error rather than the environment's workspace. The claim
+is a default, not a boundary: the per-call arg can name another workspace, and
+Plane's own membership checks decide whether the credential may act there.
+Because the arg is per-call (a fresh ContextVar scope per request), concurrent
+Claude conversations targeting different workspaces stay isolated — no
+shared/sticky state.
 """
 
 from __future__ import annotations
@@ -92,11 +95,10 @@ def _binds_its_own_workspace(claims: Mapping[str, Any] | None) -> bool:
 def workspace_for(claims: Mapping[str, Any] | None, env_default: str) -> str:
     """The workspace a call acts on, given the connection's token claims (None for stdio).
 
-    The per-call arg always wins. A Plane-OAuth or PAT token is otherwise bound to
-    its own claim, even an empty one; stdio and Cognito connections fall back to the
-    environment and raise :class:`WorkspaceError` when nothing names a workspace.
+    The per-call arg wins. A Plane-OAuth or PAT token otherwise uses its own claim
+    and never the environment; stdio and Cognito connections fall back to the
+    environment. Raises :class:`WorkspaceError` when nothing names a workspace.
     """
     if _binds_its_own_workspace(claims):
-        override = (_override.get() or "").strip()
-        return override or claims.get("workspace_slug", "")
+        return resolve_workspace(claims.get("workspace_slug"), "")
     return resolve_workspace((claims or {}).get("workspace_slug"), env_default)

@@ -66,7 +66,8 @@ ENABLED_ACTIONS: Mapping[str, frozenset[str]] = {
     # update/delete exposed so the agent can correct or retract a comment it wrote itself.
     "workitem_comment": frozenset({"list", "retrieve", "create", "update", "delete"}),
     "workitem_link": frozenset({"list", "retrieve"}),
-    "workitem_relation": frozenset({"list", "create", "delete"}),
+    # No delete: the self-hosted API has no route that removes a relation.
+    "workitem_relation": frozenset({"list", "create"}),
     # manage_workitems is the only way to undo an add: transfer moves every
     # incomplete item, and no work-item field carries cycle or module.
     "cycle": frozenset(
@@ -79,12 +80,38 @@ ENABLED_ACTIONS: Mapping[str, frozenset[str]] = {
     "member": frozenset({"me", "list_workspace", "list_project"}),
 }
 
+# Why an action is refused, where "not curated" would send the caller looking for a
+# permission they cannot get.
+REFUSED_ACTION_REASONS: Mapping[tuple[str, str], str] = {
+    ("workitem_relation", "delete"): (
+        "Removing a relation is not supported on this Plane server: its API has no route for it. "
+        "Remove the relation in the Plane web app."
+    ),
+}
+
+# Arguments every tool keeps whatever its actions declare.
+ALWAYS_ADVERTISED = frozenset({"action", "workspace_slug"})
+
 _ACTION_LINE = re.compile(r"^  (\w+) \(")
 
 
 def catalogue() -> dict[str, tuple[str, ...]]:
     """Every registered resource tool and the actions it declares."""
     return {mod.NAME: action_names(mod.ACTIONS) for mod in RESOURCES}
+
+
+def declared_arguments(tool_name: str, actions: frozenset[str]) -> frozenset[str]:
+    """Every argument the given actions of a resource declare, required or optional."""
+    declarations = next((mod.ACTIONS for mod in RESOURCES if mod.NAME == tool_name), ())
+    return frozenset(
+        name for action in declarations if action.name in actions for name in (*action.requires, *action.optional)
+    )
+
+
+def enabled_actions() -> dict[str, frozenset[str]]:
+    """The surface in force: ``PLANE_MCP_ENABLED_TOOLS`` when set, else :data:`ENABLED_ACTIONS`."""
+    override = parse_enabled_tools(os.environ.get("PLANE_MCP_ENABLED_TOOLS", ""))
+    return override if override is not None else dict(ENABLED_ACTIONS)
 
 
 def _expand_entry(
@@ -132,14 +159,19 @@ def _punctuate(line: str, *, last: bool) -> str:
     return body + ("." if last else ";")
 
 
+def refusal(tool_name: str, action: Any, allowed: frozenset[str]) -> str:
+    """The message refusing an action this server does not offer."""
+    reason = REFUSED_ACTION_REASONS.get((tool_name, action))
+    if reason:
+        return reason
+    return f"Action {action!r} is not available on {tool_name} in this server. It takes: {', '.join(sorted(allowed))}."
+
+
 def _action_guard(tool_name: str, allowed: frozenset[str]):
     async def guard(**kwargs: Any):
         action = kwargs.get("action")
         if action not in allowed:
-            raise ToolError(
-                f"Action {action!r} is not available on {tool_name} in this server. "
-                f"It takes: {', '.join(sorted(allowed))}."
-            )
+            raise ToolError(refusal(tool_name, action, allowed))
         return await forward(**kwargs)
 
     return guard
@@ -179,8 +211,7 @@ def _needs_restriction(tool: Tool, allowed: frozenset[str]) -> bool:
 
 def apply_tool_visibility(mcp: FastMCP) -> None:
     """Expose only the curated resources, each with only its curated actions."""
-    override = parse_enabled_tools(os.environ.get("PLANE_MCP_ENABLED_TOOLS", ""))
-    enabled = override if override is not None else dict(ENABLED_ACTIONS)
+    enabled = enabled_actions()
 
     restricted = [
         restrict_actions(tool, enabled[tool.name])
@@ -201,6 +232,6 @@ def apply_tool_visibility(mcp: FastMCP) -> None:
     logger.info(
         "Tool visibility: %d tool(s) exposed (%s), %d registered but hidden",
         len(visible & registered),
-        "PLANE_MCP_ENABLED_TOOLS" if override is not None else "ENABLED_ACTIONS",
+        "PLANE_MCP_ENABLED_TOOLS" if os.environ.get("PLANE_MCP_ENABLED_TOOLS", "").strip() else "ENABLED_ACTIONS",
         len(registered - visible),
     )

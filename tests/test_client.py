@@ -88,5 +88,11 @@ def test_a_token_without_a_slug_does_not_borrow_the_environments(connected, monk
     granted."""
     monkeypatch.setattr(client_module, "get_access_token", lambda: _token(auth_method="oauth"))
 
-    assert current_workspace()["slug"] == ""
-    assert get_plane_client_context().workspace_slug == ""
+    # Moneta fork: a blank claim is refused with a message naming workspace_slug,
+    # rather than reported as "", and the environment's workspace is still not borrowed.
+    from plane_mcp.moneta.workspace import WorkspaceError
+
+    with pytest.raises(WorkspaceError, match="workspace_slug"):
+        current_workspace()
+    with pytest.raises(WorkspaceError, match="workspace_slug"):
+        get_plane_client_context()
