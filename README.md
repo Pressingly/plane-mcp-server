@@ -197,7 +197,7 @@ Only the OAuth and PAT transports carry a display name; stdio is unaffected.
 
 ## Moneta fork
 
-This fork serves a curated subset of the tools below: the resources and actions the self-hosted
+This fork serves a curated subset of the resource tools described under "Tools": the resources and actions the self-hosted
 community edition supports, listed in `ENABLED_ACTIONS` in `plane_mcp/moneta/visibility.py`.
 Other resources and actions stay registered but are hidden from `tools/list` and refused on
 `tools/call`. `PLANE_MCP_ENABLED_TOOLS` replaces the curated set with a comma-separated list of
