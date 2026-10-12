@@ -1,7 +1,7 @@
 """Plane client initialization for MCP server."""
 
 import os
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.dependencies import get_access_token
@@ -20,6 +20,32 @@ class PlaneClientContext(NamedTuple):
 
     client: PlaneClient
     workspace_slug: str
+
+
+def _workspace_slug(token: AccessToken | None) -> str:
+    """The slug a connection is bound to: its token's claim, else the environment."""
+    if token:
+        return token.claims.get("workspace_slug", "")
+    return os.getenv("PLANE_WORKSPACE_SLUG", "")
+
+
+def _connected_via(token: AccessToken | None) -> str:
+    """How a connection authenticated: its token's claim, else the environment."""
+    if token:
+        return token.claims.get("auth_method", "oauth")
+    return "environment"
+
+
+def current_workspace() -> dict[str, Any]:
+    """The workspace this connection is bound to, as far as its credentials say."""
+    token = get_access_token()
+    detail = (token.claims.get("workspace") if token else None) or {}
+    return {
+        "slug": _workspace_slug(token),
+        "id": detail.get("id"),
+        "name": detail.get("name"),
+        "connected_via": _connected_via(token),
+    }
 
 
 def get_plane_client_context() -> PlaneClientContext:
@@ -42,20 +68,17 @@ def get_plane_client_context() -> PlaneClientContext:
         ConfigurationError: If access token is not available or workspace slug is missing
     """
     base_url = os.getenv("PLANE_INTERNAL_BASE_URL") or os.getenv("PLANE_BASE_URL", "https://api.plane.so")
-    env_workspace_slug = os.getenv("PLANE_WORKSPACE_SLUG", "")
 
     api_key = os.getenv("PLANE_API_KEY", "")
     access_token = None
     auth_method = "env"  # overwritten below when a request-scoped token is present
-    claim_workspace_slug: str | None = None
 
     # Get access token from the OAuth provider (which handles all auth methods)
     stored_access_token: AccessToken | None = get_access_token()
     if stored_access_token:
         # Determine authentication method to use appropriate PlaneClient constructor
-        auth_method = stored_access_token.claims.get("auth_method", "oauth")
+        auth_method = _connected_via(stored_access_token)
         token = stored_access_token.token
-        claim_workspace_slug = stored_access_token.claims.get("workspace_slug")
 
         # For API key auth methods, use api_key parameter; for OAuth, use access_token
         if auth_method in ("api_key_env", "api_key_header"):
@@ -71,7 +94,10 @@ def get_plane_client_context() -> PlaneClientContext:
     # ContextVar) > the token's workspace_slug claim (PAT X-Workspace-Slug /
     # Plane-OAuth installation) > PLANE_WORKSPACE_SLUG env. Per-call means
     # concurrent Claude conversations stay isolated. Raises a guiding error if none.
-    workspace_slug = resolve_workspace(claim_workspace_slug, env_workspace_slug)
+    workspace_slug = resolve_workspace(
+        stored_access_token.claims.get("workspace_slug") if stored_access_token else None,
+        os.getenv("PLANE_WORKSPACE_SLUG", ""),
+    )
 
     # Moneta fork: build the client. On the Cognito path this sends BOTH the
     # id_token Bearer (satisfies mPass on /api/v1) AND a minted Plane X-Api-Key
