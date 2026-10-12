@@ -183,4 +183,4 @@ async def test_footers_name_no_refused_feature(server: FastMCP) -> None:
     assert "role definitions" not in tools["member"].description
     assert "parent is the UUID" not in tools["label"].description
     assert "color" not in tools["label"].description
-    assert "type_id" not in tools["workitem"].description.split("\n\n", 2)[-1]
+    assert "UUID fields (assignees, labels, state, parent, type_id)" in tools["workitem"].description

@@ -87,6 +87,14 @@ def resolve_workspace(claim_slug: str | None, env_default: str) -> str:
     )
 
 
+UNBOUND_TOKEN = "This connection's token names no workspace; pass workspace_slug (see list_workspaces)."
+
+
+def _named(candidate: str | None) -> str | None:
+    """A slug with its whitespace stripped, or None when it names nothing."""
+    return candidate.strip() if candidate and candidate.strip() else None
+
+
 def _binds_its_own_workspace(claims: Mapping[str, Any] | None) -> bool:
     """True for a Plane-OAuth or PAT token, whose slug claim is the connection's binding."""
     return claims is not None and UPSTREAM_CLAIMS_KEY not in claims
@@ -97,8 +105,13 @@ def workspace_for(claims: Mapping[str, Any] | None, env_default: str) -> str:
 
     The per-call arg wins. A Plane-OAuth or PAT token otherwise uses its own claim
     and never the environment; stdio and Cognito connections fall back to the
-    environment. Raises :class:`WorkspaceError` when nothing names a workspace.
+    environment. Raises :class:`WorkspaceError` when nothing names a workspace; for a
+    token that names none, the message points at ``workspace_slug`` alone, since the
+    environment is never its fallback.
     """
     if _binds_its_own_workspace(claims):
-        return resolve_workspace(claims.get("workspace_slug"), "")
+        slug = _named(_override.get()) or _named(claims.get("workspace_slug"))
+        if slug is None:
+            raise WorkspaceError(UNBOUND_TOKEN)
+        return slug
     return resolve_workspace((claims or {}).get("workspace_slug"), env_default)

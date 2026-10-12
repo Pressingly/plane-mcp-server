@@ -74,10 +74,15 @@ ALIASES: Mapping[str, Alias] = {
 
 
 def _joined_ids(old_arg: str):
-    """Hand a list of ids to a resource argument that takes them as one JSON string."""
+    """Hand a list of ids to a resource argument that takes them as one JSON string.
+
+    A bare string is one id, not a sequence of characters.
+    """
 
     async def join(**kwargs: Any):
-        return await forward(**{**kwargs, old_arg: json.dumps(list(kwargs[old_arg]))})
+        value = kwargs[old_arg]
+        ids = [value] if isinstance(value, str) else list(value)
+        return await forward(**{**kwargs, old_arg: json.dumps(ids)})
 
     return join
 

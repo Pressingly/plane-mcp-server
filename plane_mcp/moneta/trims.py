@@ -14,7 +14,8 @@ from here, so the resource modules stay byte-for-byte upstream:
   custom relation definitions do not exist at all.
 * :data:`DESCRIPTION_REWRITES` replace sentences about features the server lacks:
   the workspace state catalogue, role definitions, custom relation definitions, and
-  label and work item type fields that only hidden actions use.
+  label fields that only hidden actions use. Work item ``type_id`` stays: the
+  self-hosted ``IssueSerializer`` accepts it on create and update.
 """
 
 from __future__ import annotations
@@ -78,9 +79,6 @@ DESCRIPTION_REWRITES: Mapping[str, tuple[tuple[str, str], ...]] = {
         (f"\n\n{member_tool.FOOTER}", ""),
     ),
     "label": ((f"\n\n{label_tool.FOOTER}", ""),),
-    "workitem": (
-        ("UUID fields (assignees, labels, state, parent, type_id)", "UUID fields (assignees, labels, state, parent)"),
-    ),
     "workitem_relation": (
         ("Relations between work items, and the definitions that type them.", "Relations between work items."),
     ),

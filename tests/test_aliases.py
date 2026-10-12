@@ -148,3 +148,25 @@ def test_alias_refused_when_its_action_is_not_curated(monkeypatch):
 
     with pytest.raises(ToolError, match="not available on workitem"):
         run(call())
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [([ITEM, OTHER], [ITEM, OTHER]), (ITEM, [ITEM]), ((ITEM,), [ITEM])],
+    ids=["list", "bare-string", "tuple"],
+)
+def test_joined_ids_wraps_a_bare_string_without_the_coercion_middleware(monkeypatch, value, expected):
+    """Called directly, so nothing upstream of the transform has repaired the argument."""
+    from plane_mcp.moneta import aliases
+
+    forwarded: dict[str, Any] = {}
+
+    async def fake_forward(**kwargs: Any) -> None:
+        forwarded.update(kwargs)
+
+    monkeypatch.setattr(aliases, "forward", fake_forward)
+
+    run(aliases._joined_ids("work_item_ids")(work_item_ids=value, project_id=PROJECT))
+
+    assert json.loads(forwarded["work_item_ids"]) == expected
+    assert forwarded["project_id"] == PROJECT

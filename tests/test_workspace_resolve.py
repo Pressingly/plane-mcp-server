@@ -61,10 +61,25 @@ def test_plane_token_uses_its_claim_stripped():
     assert ws.workspace_for({"workspace_slug": " claimws "}, "envws") == "claimws"
 
 
-@pytest.mark.parametrize("claims", [{"auth_method": "oauth"}, {"workspace_slug": "  "}, {"workspace_slug": None}])
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"auth_method": "oauth"},
+        {"auth_method": "oauth", "workspace_slug": None},
+        {"auth_method": "api_key_header", "workspace_slug": "   "},
+    ],
+    ids=["oauth-no-claim", "oauth-none-slug", "header-whitespace-slug"],
+)
 def test_plane_token_with_a_blank_claim_raises_instead_of_borrowing_the_environment(claims):
-    with pytest.raises(WorkspaceError, match="workspace_slug"):
+    with pytest.raises(WorkspaceError) as raised:
         ws.workspace_for(claims, "envws")
+    assert str(raised.value) == ws.UNBOUND_TOKEN
+    assert "PLANE_WORKSPACE_SLUG" not in str(raised.value)
+
+
+def test_stdio_without_any_workspace_still_suggests_the_environment():
+    with pytest.raises(WorkspaceError, match="PLANE_WORKSPACE_SLUG"):
+        ws.workspace_for(None, "")
 
 
 def test_arg_override_wins_over_a_plane_token_claim():
