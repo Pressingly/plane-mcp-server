@@ -199,10 +199,11 @@ the curated one.
 | `client.py` | `bearer_for(token, claims)` (forwards the id_token), `plane_request_auth()` (base_url + headers for raw **app-API** calls). |
 | `apitoken.py` | Mints/caches a Plane `APIToken` and builds the dual-header `PlaneClient` (see "The `/api/v1` 401 fix"). |
 | `selfhosted.py` | `SelfHostedPlaneClient` — normalises the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) and serves plane-sdk 0.3's Cloud-only routes from the self-hosted ones: `*-lite` lists → `projects/`, `cycles/`, `modules/`, `members/` (member filters applied here); `dependencies/` → `relations/`; custom relations → none; the workspace-wide work-item list → an error naming `project_id`. |
-| `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so `workitem`, `cycle` and `module` reject it with a `ToolError` instead of returning unfiltered results, and PQL (plus the "omit project_id" workspace-wide pointer) is stripped from their descriptions. |
+| `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so `workitem`, `cycle` and `module` reject it with a `ToolError` instead of returning unfiltered results, and PQL is stripped from their descriptions; the `workitem list` line names `project_id` as required, since there is no workspace-wide list. |
+| `relations.py` | `restore_relation_types(mcp)` — upstream narrowed `workitem_relation create` to six dependency types; the self-hosted `relations/` route (`IssueRelationCreateSerializer.RELATION_TYPE_CHOICES`) also takes `relates_to` and `duplicate`, so those are routed straight to it, and the `relation_type` enum and footer advertise all eight. |
 | `middleware.py` | `ValidateActionArguments` — upstream's stray-argument check with the injected `workspace_slug` set aside. |
 | `instructions.py` | `MONETA_INSTRUCTIONS` — replaces upstream's epic recipe (built on `workitem_type` and PQL, both unavailable here). |
-| `surface.py` | `apply_moneta_surface(mcp)` — runs `register_moneta_tools`, `disable_pql`, `add_workspace_arg`, `apply_tool_visibility` (last) and sets the instructions. |
+| `surface.py` | `apply_moneta_surface(mcp)` — runs `register_moneta_tools`, `disable_pql`, `restore_relation_types`, `add_workspace_arg`, `apply_tool_visibility` (last) and sets the instructions. |
 | `workspace.py` | `resolve_workspace(claim, env)` precedence resolver + `_fetch_workspaces()` (raw GET `/api/users/me/workspaces/`). |
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
@@ -310,8 +311,8 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
   description name only the curated actions, and any other action raises a `ToolError`. Upstream's
   retired tool names (`LegacyNames`) resolve to the resource with the action pre-bound, so
   `delete_work_item` is refused by the same guard and `list_milestones` is an unknown tool.
-- `apply_tool_visibility(mcp)` must run **last** in `apply_moneta_surface`: `disable_pql` and
-  `add_workspace_arg` remove and re-add tools, which would discard an earlier filter.
+- `apply_tool_visibility(mcp)` must run **last** in `apply_moneta_surface`: `disable_pql`,
+  `restore_relation_types` and `add_workspace_arg` remove and re-add tools, which would discard an earlier filter.
 - `PLANE_MCP_ENABLED_TOOLS` (comma-separated) **replaces** the curated set at runtime. Each entry
   is a resource name (all its actions) or a retired tool name (the one action it maps to);
   `list_workspaces` is always kept.
