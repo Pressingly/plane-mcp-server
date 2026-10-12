@@ -198,12 +198,15 @@ the curated one.
 | `cognito.py` | `PlaneCognitoProvider(AWSCognitoProvider)` — captures the Cognito **id_token** and stashes `{id_token, email, cognito:username}` under the issued JWT's `upstream_claims`. |
 | `client.py` | `bearer_for(token, claims)` (forwards the id_token), `plane_request_auth()` (base_url + headers for raw **app-API** calls). |
 | `apitoken.py` | Mints/caches a Plane `APIToken` and builds the dual-header `PlaneClient` (see "The `/api/v1` 401 fix"). |
-| `selfhosted.py` | `SelfHostedPlaneClient` — normalises the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) and serves plane-sdk 0.3's Cloud-only routes from the self-hosted ones: `*-lite` lists → `projects/`, `cycles/`, `modules/`, `members/` (member filters applied here); `dependencies/` → `relations/`; custom relations → none; the workspace-wide work-item list → an error naming `project_id`. |
+| `selfhosted.py` | `SelfHostedPlaneClient` — normalises the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) and serves plane-sdk 0.3's Cloud-only routes from the self-hosted ones: `*-lite` lists → `projects/`, `cycles/`, `modules/`, `members/` (name and email filters applied here); `dependencies/` → `relations/`; custom relations → none; the workspace-wide work-item list and the workspace state catalogue → an error naming `project_id`. |
 | `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so `workitem`, `cycle` and `module` reject it with a `ToolError` instead of returning unfiltered results, and PQL is stripped from their descriptions; the `workitem list` line names `project_id` as required, since there is no workspace-wide list. |
 | `relations.py` | `restore_relation_types(mcp)` — upstream narrowed `workitem_relation create` to six dependency types; the self-hosted `relations/` route (`IssueRelationCreateSerializer.RELATION_TYPE_CHOICES`) also takes `relates_to` and `duplicate`, so those are routed straight to it, and the `relation_type` enum and footer advertise all eight. |
-| `middleware.py` | `ValidateActionArguments` — upstream's stray-argument check with the injected `workspace_slug` set aside. |
+| `trims.py` | `apply_self_hosted_trims(mcp)` — refuses arguments the server cannot honour, with the reason (`member list_workspace`'s role-slug/activity/bot filters and paging; custom relation definitions), and rewrites descriptions that name missing features (workspace state catalogue, role definitions, label/type fields of hidden actions). |
+| `listing.py` | `AdvertisedArguments` — a `tools/list`-only transform dropping hidden actions' arguments and the unsupported ones from each schema. Execution keeps the full schema, so a call that sends one reaches the guard that explains the refusal. |
+| `aliases.py` | `MonetaAliases` — resolves the fork's eight old add/remove names (`add_work_item_assignee`, `add_work_items_to_cycle`, ...) to the `manage_*` actions with their original argument names, on `tools/call` only and through the curated tool. |
+| `middleware.py` | `ValidateActionArguments` — upstream's stray-argument check with the injected `workspace_slug` set aside; a call naming no action is answered with the curated actions. |
 | `instructions.py` | `MONETA_INSTRUCTIONS` — replaces upstream's epic recipe (built on `workitem_type` and PQL, both unavailable here). |
-| `surface.py` | `apply_moneta_surface(mcp)` — runs `register_moneta_tools`, `disable_pql`, `restore_relation_types`, `add_workspace_arg`, `apply_tool_visibility` (last) and sets the instructions. |
+| `surface.py` | `apply_moneta_surface(mcp)` — runs `register_moneta_tools`, `disable_pql`, `restore_relation_types`, `apply_self_hosted_trims`, `add_workspace_arg`, `apply_tool_visibility` (last), adds the `MonetaAliases` and `AdvertisedArguments` transforms and sets the instructions. |
 | `workspace.py` | `resolve_workspace(claim, env)` precedence resolver + `_fetch_workspaces()` (raw GET `/api/users/me/workspaces/`). |
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
@@ -278,8 +281,10 @@ per-call workspace_slug arg (ContextVar)  >  token claim (PAT/Plane-OAuth)  >  P
 ```
 
 The env default applies only to stdio and Cognito connections (no slug claim). A Plane-OAuth or
-PAT token is bound to its own claim, even an empty one, as upstream's `tests/test_client.py`
-requires; only the per-call arg can pick another workspace.
+PAT token never borrows it: without the per-call arg it uses its own claim, and a blank claim
+raises `WorkspaceError` (the fork's edit to upstream's `tests/test_client.py` expects that). The
+claim is a default, not a boundary: the per-call arg can name another workspace, and Plane's own
+membership checks decide whether the credential may act there.
 
 `list_workspaces` (the discovery tool) is the only tool skipped by the injector. Usage in Claude:
 call `list_workspaces` to get slugs, then pass `workspace_slug` per tool call.
@@ -299,10 +304,10 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
 | `workitem` | list, retrieve, retrieve_by_identifier, search, create, update, manage_assignee, manage_label |
 | `workitem_comment` | list, retrieve, create, update, delete |
 | `workitem_link` | list, retrieve |
-| `workitem_relation` | list, create, delete |
+| `workitem_relation` | list, create (no delete: the self-hosted API has no remove route) |
 | `cycle` | list, retrieve, create, update, list_workitems, manage_workitems, transfer_workitems, complete |
 | `module` | list, retrieve, list_workitems, manage_workitems |
-| `label`, `state` | list, retrieve |
+| `label`, `state` | list, retrieve (state needs `project_id`: no workspace state catalogue) |
 | `member` | me, list_workspace, list_project |
 
 - A hidden resource stays **registered but hidden** (`_local_provider.enable(names=…, only=True)`),
@@ -311,8 +316,13 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
   description name only the curated actions, and any other action raises a `ToolError`. Upstream's
   retired tool names (`LegacyNames`) resolve to the resource with the action pre-bound, so
   `delete_work_item` is refused by the same guard and `list_milestones` is an unknown tool.
-- `apply_tool_visibility(mcp)` must run **last** in `apply_moneta_surface`: `disable_pql`,
-  `restore_relation_types` and `add_workspace_arg` remove and re-add tools, which would discard an earlier filter.
+- Arguments only hidden actions use are dropped from the listing by `AdvertisedArguments`, and
+  a refused action can carry a reason (`REFUSED_ACTION_REASONS`, e.g. relation delete).
+- `apply_tool_visibility(mcp)` must run **last** of the tool rewrites in `apply_moneta_surface`:
+  `disable_pql`, `restore_relation_types`, `apply_self_hosted_trims` and `add_workspace_arg`
+  remove and re-add tools, which would discard an earlier filter.
+- Besides upstream's retired names, `MonetaAliases` keeps the fork's eight add/remove names
+  callable (not listed); they pass through the same guard.
 - `PLANE_MCP_ENABLED_TOOLS` (comma-separated) **replaces** the curated set at runtime. Each entry
   is a resource name (all its actions) or a retired tool name (the one action it maps to);
   `list_workspaces` is always kept.
