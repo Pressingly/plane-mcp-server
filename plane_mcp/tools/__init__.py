@@ -6,6 +6,7 @@ import logging
 
 from fastmcp import FastMCP
 
+from plane_mcp.moneta.annotations import apply_tool_annotations
 from plane_mcp.moneta.inject import add_workspace_arg
 from plane_mcp.moneta.pql_guard import disable_pql
 from plane_mcp.moneta.tools import register_moneta_tools
@@ -56,6 +57,8 @@ def register_tools(mcp: FastMCP) -> None:
     disable_pql(mcp)  # Moneta fork: self-hosted Plane ignores pql; reject it instead of returning unfiltered lists
 
     add_workspace_arg(mcp)  # Moneta fork: inject optional workspace_slug on every workspace-scoped tool
+
+    apply_tool_annotations(mcp)  # Moneta fork: label every tool as a read or a write for MCP clients
 
     # Moneta fork: expose only the curated tool set on tools/list. Must run last —
     # add_workspace_arg removes and re-adds each tool, which would drop the filter.

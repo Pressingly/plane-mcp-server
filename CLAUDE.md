@@ -133,7 +133,7 @@ Upstream files touched (the entire upstream footprint):
 |---|---|
 | `__main__.py` | http mode → `moneta.http.run()` when `moneta.http.enabled()` (i.e. `COGNITO_USER_POOL_ID` set), else upstream Plane-OAuth+SSE |
 | `client.py` | `get_plane_client_context` calls `bearer_for(...)`, `resolve_workspace(...)`, and `build_plane_client(...)` |
-| `tools/__init__.py` | `register_moneta_tools(mcp)` + `disable_pql(mcp)` + `add_workspace_arg(mcp)` + `apply_tool_visibility(mcp)` at the end of `register_tools`; `register_milestone_tools` is **not** called (milestones are unsupported by the community edition — the file itself stays byte-pristine) |
+| `tools/__init__.py` | `register_moneta_tools(mcp)` + `disable_pql(mcp)` + `add_workspace_arg(mcp)` + `apply_tool_annotations(mcp)` + `apply_tool_visibility(mcp)` at the end of `register_tools`; `register_milestone_tools` is **not** called (milestones are unsupported by the community edition — the file itself stays byte-pristine) |
 
 ## `plane_mcp/moneta/` modules
 
@@ -147,6 +147,7 @@ Upstream files touched (the entire upstream footprint):
 | `workspace.py` | `resolve_workspace(claim, env)` precedence resolver + `_fetch_workspaces()` (raw GET `/api/users/me/workspaces/`). |
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
+| `annotations.py` | `apply_tool_annotations(mcp)` — sets the MCP `readOnlyHint` / `destructiveHint` annotations on every registered tool from the verb its name starts with, so clients confirm writes and let reads through; an unrecognised verb is labelled a destructive write. |
 | `visibility.py` | `apply_tool_visibility(mcp)` — exposes only the curated `ENABLED_TOOLS` set on `tools/list` (see "Tool visibility"). |
 | `storage.py` | `build_oauth_storage()` — Valkey **DB 12** + Fernet for the Cognito provider's OAuth state (via `MCP_OAUTH_STORAGE_URL`). |
 | `http.py` | `enabled()` / `run()` — the Cognito HTTP server entry point + self-contained JSON logging. |
