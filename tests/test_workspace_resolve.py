@@ -39,3 +39,52 @@ def test_blank_candidates_are_ignored():
         assert resolve_workspace("  ", "envws") == "envws"
     finally:
         ws.reset_override(token)
+
+
+COGNITO_CLAIMS = {"upstream_claims": {"email": "u@example.com"}}
+
+
+def test_cognito_token_falls_back_to_the_environment():
+    assert ws.workspace_for(COGNITO_CLAIMS, "envws") == "envws"
+
+
+def test_stdio_falls_back_to_the_environment():
+    assert ws.workspace_for(None, "envws") == "envws"
+
+
+def test_cognito_token_without_any_workspace_raises_the_guiding_error():
+    with pytest.raises(WorkspaceError, match="list_workspaces"):
+        ws.workspace_for(COGNITO_CLAIMS, "")
+
+
+def test_plane_token_uses_its_claim_stripped():
+    assert ws.workspace_for({"workspace_slug": " claimws "}, "envws") == "claimws"
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"auth_method": "oauth"},
+        {"auth_method": "oauth", "workspace_slug": None},
+        {"auth_method": "api_key_header", "workspace_slug": "   "},
+    ],
+    ids=["oauth-no-claim", "oauth-none-slug", "header-whitespace-slug"],
+)
+def test_plane_token_with_a_blank_claim_raises_instead_of_borrowing_the_environment(claims):
+    with pytest.raises(WorkspaceError) as raised:
+        ws.workspace_for(claims, "envws")
+    assert str(raised.value) == ws.UNBOUND_TOKEN
+    assert "PLANE_WORKSPACE_SLUG" not in str(raised.value)
+
+
+def test_stdio_without_any_workspace_still_suggests_the_environment():
+    with pytest.raises(WorkspaceError, match="PLANE_WORKSPACE_SLUG"):
+        ws.workspace_for(None, "")
+
+
+def test_arg_override_wins_over_a_plane_token_claim():
+    token = ws.set_override("acme")
+    try:
+        assert ws.workspace_for({"workspace_slug": "claimws"}, "envws") == "acme"
+    finally:
+        ws.reset_override(token)

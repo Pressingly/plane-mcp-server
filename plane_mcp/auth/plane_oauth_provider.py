@@ -37,11 +37,19 @@ from key_value.aio.protocols import AsyncKeyValue
 from plane.models.users import UserLite
 from pydantic import AnyHttpUrl, BaseModel, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from starlette.requests import Request
 
 logger = get_logger(__name__)
 
+# When true, user info (PII such as the display name) is included in logs.
+# Defaults to false so PII is never logged unless explicitly opted in.
+LOG_USER_INFO: bool = os.getenv("LOG_USER_INFO", "").lower() == "true"
+
 
 DEFAULT_PLANE_BASE_URL = "https://api.plane.so"
+
+# Name FastMCP's consent flow gives the cookie that remembers a Deny (it lives for a year).
+_DENIED_CLIENTS_COOKIE = "MCP_DENIED_CLIENTS"
 
 
 class WorkspaceDetail(BaseModel):
@@ -91,6 +99,7 @@ class PlaneOAuthProviderSettings(BaseSettings):
     jwt_signing_key: str | None = None
     plane_base_url: str | None = None
     plane_internal_base_url: str | None = None  # Internal URL for server-to-server calls
+    enable_cimd: bool = False
 
     @field_validator("required_scopes", mode="before")
     @classmethod
@@ -157,7 +166,11 @@ class PlaneOAuthTokenVerifier(TokenVerifier):
 
                 expires_at = int(time.time() + 3600)
 
-                logger.info(f"User: ({user.id}) - {user.display_name}")
+                # display_name is PII — only log it when explicitly opted in.
+                if LOG_USER_INFO:
+                    logger.info(f"User verified: ({user.id}) - {user.display_name}")
+                else:
+                    logger.info(f"User verified: ({user.id})")
 
                 installations_response = await client.get(
                     f"{base_url}/auth/o/app-installation/",
@@ -248,6 +261,7 @@ class PlaneOAuthProvider(OAuthProxy):
         require_authorization_consent: bool = True,
         plane_base_url: str | NotSetT = NotSet,
         plane_internal_base_url: str | NotSetT = NotSet,
+        enable_cimd: bool | NotSetT = NotSet,
     ):
         """Initialize Plane OAuth provider.
 
@@ -285,6 +299,8 @@ class PlaneOAuthProvider(OAuthProxy):
                 testing environments.
             plane_base_url: Base URL for Plane API
                 (defaults to https://api.plane.so or PLANE_BASE_URL env var)
+            enable_cimd: Whether to enable CIMD (Client ID Metadata Document) support.
+                Defaults to False. Can be set via the PLANE_OAUTH_PROVIDER_ENABLE_CIMD environment variable.
         """
 
         settings = PlaneOAuthProviderSettings.model_validate(
@@ -302,6 +318,7 @@ class PlaneOAuthProvider(OAuthProxy):
                     "jwt_signing_key": jwt_signing_key,
                     "plane_base_url": plane_base_url,
                     "plane_internal_base_url": plane_internal_base_url,
+                    "enable_cimd": enable_cimd,
                 }.items()
                 if v is not NotSet
             }
@@ -351,6 +368,7 @@ class PlaneOAuthProvider(OAuthProxy):
             jwt_signing_key=settings.jwt_signing_key,
             require_authorization_consent=require_authorization_consent,
             valid_scopes=["read", "write"],
+            enable_cimd=settings.enable_cimd,
         )
 
         logger.info(
@@ -358,3 +376,9 @@ class PlaneOAuthProvider(OAuthProxy):
             settings.client_id,
             required_scopes_final,
         )
+
+    def _decode_list_cookie(self, request: Request, base_name: str) -> list[str]:
+        """Ignore FastMCP's year-long denied-clients cookie so a Deny only applies to that attempt."""
+        if base_name == _DENIED_CLIENTS_COOKIE:
+            return []
+        return super()._decode_list_cookie(request, base_name)

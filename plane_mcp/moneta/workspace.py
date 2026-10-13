@@ -8,13 +8,20 @@ tool call; :func:`resolve_workspace` reads it here.
 
 Precedence: per-call ``workspace_slug`` arg → token ``workspace_slug`` claim
 (PAT ``X-Workspace-Slug`` / Plane-OAuth installation) → ``PLANE_WORKSPACE_SLUG``
-env → guiding error. Because the arg is per-call (a fresh ContextVar scope per
-request), concurrent Claude conversations targeting different workspaces stay
-isolated — no shared/sticky state.
+env → guiding error. The environment is a default only where no credential names a
+workspace (stdio, and Cognito tokens, which carry no slug claim). A Plane-OAuth or
+PAT token never falls back to it: without the per-call arg it uses its own claim,
+and a blank claim is an error rather than the environment's workspace. The claim
+is a default, not a boundary: the per-call arg can name another workspace, and
+Plane's own membership checks decide whether the credential may act there.
+Because the arg is per-call (a fresh ContextVar scope per request), concurrent
+Claude conversations targeting different workspaces stay isolated — no
+shared/sticky state.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -22,6 +29,7 @@ import requests
 from fastmcp.utilities.logging import get_logger
 
 from plane_mcp.moneta.client import plane_request_auth
+from plane_mcp.moneta.cognito import UPSTREAM_CLAIMS_KEY
 
 logger = get_logger(__name__)
 
@@ -77,3 +85,33 @@ def resolve_workspace(claim_slug: str | None, env_default: str) -> str:
         "No Plane workspace specified. Pass workspace_slug to the tool (call "
         "list_workspaces to find your slug), or set PLANE_WORKSPACE_SLUG."
     )
+
+
+UNBOUND_TOKEN = "This connection's token names no workspace; pass workspace_slug (see list_workspaces)."
+
+
+def _named(candidate: str | None) -> str | None:
+    """A slug with its whitespace stripped, or None when it names nothing."""
+    return candidate.strip() if candidate and candidate.strip() else None
+
+
+def _binds_its_own_workspace(claims: Mapping[str, Any] | None) -> bool:
+    """True for a Plane-OAuth or PAT token, whose slug claim is the connection's binding."""
+    return claims is not None and UPSTREAM_CLAIMS_KEY not in claims
+
+
+def workspace_for(claims: Mapping[str, Any] | None, env_default: str) -> str:
+    """The workspace a call acts on, given the connection's token claims (None for stdio).
+
+    The per-call arg wins. A Plane-OAuth or PAT token otherwise uses its own claim
+    and never the environment; stdio and Cognito connections fall back to the
+    environment. Raises :class:`WorkspaceError` when nothing names a workspace; for a
+    token that names none, the message points at ``workspace_slug`` alone, since the
+    environment is never its fallback.
+    """
+    if _binds_its_own_workspace(claims):
+        slug = _named(_override.get()) or _named(claims.get("workspace_slug"))
+        if slug is None:
+            raise WorkspaceError(UNBOUND_TOKEN)
+        return slug
+    return resolve_workspace((claims or {}).get("workspace_slug"), env_default)

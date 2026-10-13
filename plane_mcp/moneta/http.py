@@ -25,7 +25,6 @@ from datetime import datetime, timezone
 
 import uvicorn
 from fastmcp import FastMCP
-from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
 from mcp.types import Icon
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
@@ -35,8 +34,7 @@ from starlette.routing import Mount, Route
 
 from plane_mcp.moneta.cognito import PlaneCognitoProvider
 from plane_mcp.moneta.storage import build_oauth_storage
-from plane_mcp.server import get_header_mcp
-from plane_mcp.tools import register_tools
+from plane_mcp.server import _configured, get_header_mcp
 
 logger = logging.getLogger("fastmcp.plane_mcp.moneta")
 
@@ -45,6 +43,7 @@ _DEFAULT_HTTP_PORT = 8211
 # session's refresh lifetime and its Valkey retention. fastmcp 3.4 raised the
 # default from 30 days to 1 year; this keeps the 30-day cap plane-mcp had on 3.2.
 _REFRESH_TOKEN_FALLBACK_SECONDS = 30 * 24 * 60 * 60
+
 
 def enabled() -> bool:
     """True when the Cognito HTTP path should handle ``http`` mode."""
@@ -146,9 +145,7 @@ def get_cognito_http_mcp() -> FastMCP:
         website_url="https://plane.so",
         auth=provider,
     )
-    mcp.add_middleware(StructuredLoggingMiddleware(include_payloads=True))
-    register_tools(mcp)
-    return mcp
+    return _configured(mcp)
 
 
 class _JSONFormatter(logging.Formatter):
