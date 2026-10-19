@@ -1,10 +1,19 @@
-"""
-Simple integration test for Plane MCP Server.
+"""End-to-end test for the Plane MCP Server, against a live workspace.
 
-Environment Variables Required:
-    PLANE_TEST_API_KEY: API key for authentication
-    PLANE_TEST_WORKSPACE_SLUG: Workspace slug for testing
-    PLANE_TEST_MCP_URL: MCP server URL (default: http://localhost:8211)
+Moneta fork: upstream's flow creates epics and milestones, which the self-hosted
+community edition does not serve, so this keeps the project and work-item part.
+Tools are called by pre-consolidation names that upstream's ``LegacyNames`` still
+resolves (create_project, create_work_item, update_work_item, delete_work_item,
+delete_project), so this also covers that path. The fork's eight add/remove names
+resolve through ``plane_mcp.moneta.aliases`` and are covered by
+``tests/test_aliases.py``; not every retired name resolves on this server.
+
+Environment variables:
+    PLANE_TEST_API_KEY:        API key for authentication (required)
+    PLANE_TEST_WORKSPACE_SLUG: Workspace slug to write to (required)
+    PLANE_TEST_MCP_URL:        Server URL (default: http://localhost:8211)
+
+Skipped unless the two required variables are set.
 """
 
 import asyncio
@@ -15,7 +24,15 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from plane_mcp.moneta.visibility import ALWAYS_ENABLED, ENABLED_TOOLS
+from plane_mcp.moneta.visibility import ALWAYS_ENABLED, ENABLED_ACTIONS
+
+pytestmark = pytest.mark.skipif(
+    not (os.getenv("PLANE_TEST_API_KEY") and os.getenv("PLANE_TEST_WORKSPACE_SLUG")),
+    reason=(
+        "live integration test: set PLANE_TEST_API_KEY and PLANE_TEST_WORKSPACE_SLUG, "
+        "and run a server at PLANE_TEST_MCP_URL (default http://localhost:8211)"
+    ),
+)
 
 
 def get_config():
@@ -25,9 +42,7 @@ def get_config():
     mcp_url = os.getenv("PLANE_TEST_MCP_URL", "http://localhost:8211")
 
     if not api_key or not workspace_slug:
-        raise RuntimeError(
-            "Missing required env vars: PLANE_TEST_API_KEY, PLANE_TEST_WORKSPACE_SLUG"
-        )
+        raise RuntimeError("Missing required env vars: PLANE_TEST_API_KEY, PLANE_TEST_WORKSPACE_SLUG")
 
     return {
         "api_key": api_key,
@@ -39,7 +54,8 @@ def get_config():
 def extract_result(result):
     """Extract data from MCP tool result."""
     if hasattr(result, "structured_content") and result.structured_content is not None:
-        return result.structured_content
+        content = result.structured_content
+        return content.get("result", content) if isinstance(content, dict) else content
     if hasattr(result, "content") and result.content:
         import json
 
@@ -47,7 +63,7 @@ def extract_result(result):
         if hasattr(content, "text"):
             try:
                 return json.loads(content.text)
-            except:
+            except ValueError:
                 return {"raw": content.text}
     return {}
 
@@ -148,8 +164,9 @@ async def run_integration_test():
         print("Integration test passed!")
 
 
-# Every tool run_integration_test() calls. PLANE_MCP_ENABLED_TOOLS *replaces* the
-# curated set, so all of these must be named in it — listing only the hidden ones
+# Every retired tool name run_integration_test() calls. PLANE_MCP_ENABLED_TOOLS
+# *replaces* the curated set (each retired name enables the action it maps to), so
+# all of these must be named in it — listing only the hidden ones
 # would un-skip the test into a mid-run "Unknown tool" and orphan the project.
 _WRITE_PATH_TOOLS = {
     "create_project",
@@ -168,7 +185,7 @@ def _write_path_exposed() -> bool:
 
 @pytest.mark.skipif(
     not _write_path_exposed(),
-    reason=f"Moneta fork: this flow's tools are registered but hidden by the whitelist. "
+    reason=f"Moneta fork: this flow's actions are registered but hidden by the curated surface. "
     f"Set PLANE_MCP_ENABLED_TOOLS to include all of: {', '.join(sorted(_WRITE_PATH_TOOLS))}.",
 )
 def test_full_integration():
@@ -178,14 +195,14 @@ def test_full_integration():
 
 async def run_tools_availability_test():
     """
-    Test that the live server exposes exactly the Moneta whitelist.
+    Test that the live server exposes exactly the Moneta curated resources.
 
     Moneta fork: tools/list is a static curated set, so this asserts an exact
     match rather than a subset — a stray extra tool is as much a bug as a
     missing one.
     """
     config = get_config()
-    expected = set(ENABLED_TOOLS) | set(ALWAYS_ENABLED)
+    expected = set(ENABLED_ACTIONS) | set(ALWAYS_ENABLED)
 
     transport = StreamableHttpTransport(
         f"{config['mcp_url']}/http/api-key/mcp",

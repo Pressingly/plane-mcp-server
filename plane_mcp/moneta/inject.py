@@ -1,7 +1,7 @@
 """Inject an optional ``workspace_slug`` arg onto every workspace-scoped tool.
 
-Rather than editing the ~144 upstream tool signatures (the maximal merge-conflict
-surface), we transform each registered tool at startup with FastMCP's public
+Rather than editing every upstream resource tool's signature (the maximal
+merge-conflict surface), we transform each registered tool at startup with FastMCP's public
 tool-transform API (:meth:`Tool.from_tool` + :func:`forward`): a thin wrapper adds
 an optional ``workspace_slug`` argument, stashes it in a ContextVar for the
 duration of the call, and forwards to the original tool. ``get_plane_client_context``
@@ -12,8 +12,10 @@ scope), concurrent Claude conversations targeting different workspaces stay full
 isolated — unlike any server-side "active workspace" state, which would be shared
 across a user's conversations.
 
-The injection is applied from ``plane_mcp.tools.register_tools`` (one hook line),
-so the per-domain tool modules stay byte-for-byte upstream.
+The injection is applied from :func:`plane_mcp.moneta.surface.apply_moneta_surface`,
+so the resource tool modules stay byte-for-byte upstream. The argument is declared
+by no resource's ``ACTIONS``, so upstream's ``ValidateActionArguments`` must be told
+to let it through: see :data:`INJECTED_ARGS` and :mod:`plane_mcp.moneta.middleware`.
 """
 
 from __future__ import annotations
@@ -28,6 +30,9 @@ from fastmcp.utilities.logging import get_logger
 from plane_mcp.moneta import workspace as ws
 
 logger = get_logger(__name__)
+
+# Arguments this module adds to tools whose ACTIONS declarations do not name them.
+INJECTED_ARGS = frozenset({"workspace_slug"})
 
 # Moneta tools that are not workspace-scoped — leave them untouched.
 _SKIP_TOOLS = frozenset({"list_workspaces"})

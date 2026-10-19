@@ -24,7 +24,7 @@ pytest
 # Run a single test
 pytest tests/test_visibility.py -v
 
-# The write-path E2E test is skipped unless its tools are opted back in
+# The write-path E2E test is skipped unless its actions are opted back in
 PLANE_MCP_ENABLED_TOOLS=create_project,delete_project,delete_work_item,create_work_item,update_work_item \
   pytest tests/test_integration.py::test_full_integration -v
 
@@ -49,7 +49,30 @@ ruff check plane_mcp/
 
 ### Server Factories (`server.py`)
 
-Three factory functions (`get_oauth_mcp`, `get_header_mcp`, `get_stdio_mcp`) each create a `FastMCP` instance, register all tools, and configure the appropriate auth provider. OAuth/HTTP modes use Redis for token storage (falls back to in-memory).
+Three factory functions (`get_oauth_mcp`, `get_header_mcp`, `get_stdio_mcp`) each create a `FastMCP` instance and configure the appropriate auth provider, then hand it to `_configured()` for the middleware stack and tools — one place, so a transport cannot be left a middleware behind. OAuth/HTTP modes use Redis for token storage (falls back to in-memory).
+
+### Middleware (`middleware.py`)
+
+Ordered as registered; the earlier one wraps the later:
+
+| Middleware | Does |
+|---|---|
+| `PlaneLoggingMiddleware` | structured logging, plus the tool name |
+| `CoerceArguments` | repairs arguments a client encoded as strings, before validation (`coercion.py`) |
+| `ValidateActionArguments` | refuses a call with no `action`, and arguments the chosen action does not accept, from the `ACTIONS` declaration |
+
+
+A dispatch tool's name is not its operation, so `PlaneLoggingMiddleware` adds `resource` and `action` to every `tools/call` record — start, success and error alike, where previously only success and error carried anything. For a retired name both are resolved through the alias table, since it carries no `action` of its own.
+
+| field | means |
+|---|---|
+| `tool` | the name the caller used — **unchanged**, so existing dashboards keep counting the same thing |
+| `resource` | the resource tool that ran (`workitem`); equals `tool` for a current call |
+| `action` | the operation (`count`), absent only for a tool that has no actions |
+
+`resource` + `action` names one operation however it was reached, and `tool != resource` is exactly the set of calls still arriving on a retired name. `legacy.py` also keeps its per-resolution log line, which predates these fields.
+
+Coercion runs before validation so an argument is judged by the value it repairs to. `ValidateActionArguments` closes a gap a per-tool schema cannot: every action's parameters share one schema, so an argument meant for another action validated cleanly and was then dropped, and the call answered a different question than the one asked. Only arguments carrying a value are judged. It also answers a call that names no `action` at all, because the schema error for that case reports the missing parameter without reporting one permitted value — and an agent probing a tool with empty arguments to learn its interface is asking exactly the question the action list answers. Retired names are exempt from both checks: they are keyed by their own retired name, which the `ACTIONS` table does not carry, so nothing there claims them.
 
 ### Client Context (`client.py`)
 
@@ -62,21 +85,44 @@ Three factory functions (`get_oauth_mcp`, `get_header_mcp`, `get_stdio_mcp`) eac
 
 ### Tools (`tools/`)
 
-19 tool modules organized by Plane domain (projects, work_items, cycles, modules, etc.), totaling 55+ tools. Each module exports a `register_*_tools(mcp: FastMCP)` function called from `tools/__init__.py`.
+One action-dispatch tool per Plane resource: **30 tools, 207 actions, ~67k chars advertised**. `tools/__init__.py` re-exports `register_tools`, so `server.py` and `__main__.py` see a single entry point.
 
-**Tool pattern:**
-```python
-def register_*_tools(mcp: FastMCP) -> None:
-    @mcp.tool()
-    def tool_name(param: str, optional_param: str | None = None) -> SomePlaneModel:
-        """Docstring with Args and Returns sections."""
-        client, workspace_slug = get_plane_client_context()
-        return client.endpoint.operation(workspace_slug=workspace_slug, ...)
-```
+One module per resource, each exporting `NAME`, `ACTIONS`, `LEGACY` and `register(mcp)`. `ACTIONS` is the single source of truth: the tool description and its `ToolAnnotations` are generated from it, and the conformance suite asserts they agree with the function signature. See `tools/README.md` for the full convention.
+
+`tools/` contains resource modules plus `registry.py` (the `RESOURCES` tuple and alias tables) and `legacy.py` (retired-name resolution). Shared helpers live in `plane_mcp/toolkit/`, not here — see below.
+
+Where a resource exists at both project and workspace scope, it resolves that once in a local `_scope_of` rather than through a shared abstraction: the two resources that need it need different shapes (`workitem_type` is a two-way split, `workitem_property` three-way plus a method-name suffix).
+
+`RESOURCES` is an explicit tuple, not a directory scan. Its order is the advertised order and therefore a wire-format guarantee: tool definitions head a client's prompt cache, so reordering invalidates live conversations. Append; never re-sort. `test_resource_order_is_pinned` holds it to a literal list.
+
+**Retired names.** Before consolidation this server exposed 177 tools, one per operation. 169 of those names still resolve, via a `Transform` mapping each to its `(tool, action)` pair with `action` hidden, and keeping the parameter spelling they shipped with (`work_item_id`, not `workitem_id`). The transforms implement `list_tools`/`get_tool` only — execution keeps the full schema, so tool results are unchanged, and nothing is advertised so the listing is unaffected. Seven encoded their action in a parameter and are declared in `LEGACY_UNMAPPED` with a replacement. `tests/tools/_retired_names.py` is the frozen record of all 177.
 
 Tools return Pydantic models from `plane-sdk` and use Python 3.10+ union syntax (`str | None`).
 
+### Toolkit (`toolkit/`)
+
+Shared building blocks for the tool surface, split by *when* they act:
+
+| Module | Acts at | Provides |
+|---|---|---|
+| `spec.py` | declaration | `Action`, `build_description`, `build_annotations` |
+| `runtime.py` | call | `missing`, `needs`, `require`, `one_of`, `opt`, `coerce_list`, `page_params`, `as_params`, `ids_of` |
+| `mentions.py` | call | `render_mentions`, `tokenize_mentions`, `mention_user_ids`, `project_mention_error` |
+| `paging.py` | response | `envelope`, `dump_results`, `pql_failure`, `workitem_page` |
+| `governance.py` | policy | `workspace_owns_resource`, `GOVERNED_BY`, `workspace_owns`, `migration_in_progress`, `plan_gated` |
+| `transforms.py` | listing | `StripOutputSchemas` |
+
+Governance, plan gates and the rest of the toolkit conventions are documented in `plane_mcp/toolkit/README.md`, including what adding a newly governed resource takes.
+
+Names are re-exported from `plane_mcp/toolkit/__init__.py`, so a resource module needs one import: `from plane_mcp.toolkit import Action, build_description, missing, opt`.
+
+These sit outside `tools/` deliberately. They were previously `_`-prefixed modules inside the resource package, where the underscore was the module-discovery filter rather than a privacy marker — which made helper filenames load-bearing and made the most widely imported module in the package look private. Nothing here knows which catalogue is calling it.
+
+Anything that encodes the catalogue's history — `LegacyNames`, the `RESOURCES` tuple — belongs under `tools/`, not here.
+
 ### Testing
+
+`tests/tools/` covers the surface with no network and no credentials: surface-wide invariants, plus every action of every resource executed against `SpyClient`, a stand-in that binds each call against the genuine SDK signature and type-checks its arguments.
 
 Integration tests in `tests/test_integration.py` use `FastMCP.Client` with `StreamableHttpTransport`. Tests run against a live Plane instance — configure via `.env.test` (copy to `.env.test.local` with real values).
 
@@ -88,15 +134,19 @@ Integration tests in `tests/test_integration.py` use `FastMCP.Client` with `Stre
 | `PLANE_WORKSPACE_SLUG` | stdio | Target workspace |
 | `PLANE_BASE_URL` | all (default: https://api.plane.so) | Plane API URL |
 | `PLANE_INTERNAL_BASE_URL` | http/sse (optional) | Internal URL for server-to-server calls |
+| `REDIS_URL` | http/sse (optional) | Token storage as one connection URL (`redis://`/`rediss://`); wins over host/port |
 | `REDIS_HOST` / `REDIS_PORT` | http/sse (optional) | Token storage (falls back to in-memory) |
 | `PLANE_OAUTH_PROVIDER_*` | http/sse OAuth | OAuth client credentials and base URL |
+| `PLANE_OAUTH_ALLOWED_REDIRECT_URIS` | http/sse OAuth (optional) | Comma-separated redirect URI patterns appended to the built-in allowlist (onboard clients without a release) |
+| `LOG_USER_INFO` | all (optional, default: false) | When `true`, include user info (PII such as display name) in logs alongside the opaque user id |
+| `LOG_PAYLOADS` | all (optional, default: true) | Log request payloads.|
 
 ---
 
 # CLAUDE.md MONETA
 
 This half documents the **Moneta fork** — the changes that make this server run inside the
-`foss-server-bundle` devstack behind AWS Cognito / mPass SSO, alongside `surfsense-mcp-server`.
+`foss-server-bundle` devstack behind AWS Cognito / mPass SSO.
 Everything above is upstream `makeplane/plane-mcp-server`; everything below is fork-specific.
 
 ## Branch & commit policy
@@ -122,7 +172,8 @@ This repo follows the same convention as every other app in the bundle:
 
 All fork logic lives in the **`plane_mcp/moneta/`** subpackage. Upstream modules carry only
 **tiny additive hooks** (one import + one call each), so upstream pulls stay conflict-free. The
-~20 files under `plane_mcp/tools/` are **byte-pristine** and must stay that way.
+resource modules under `plane_mcp/tools/` (and `tools/__init__.py`) are **byte-pristine** and
+must stay that way.
 
 **When adding a fork feature: put the logic in `plane_mcp/moneta/` and add a one-line hook. Do
 not edit upstream modules in place.** Accept DRY duplication with upstream over merge pain.
@@ -132,8 +183,13 @@ Upstream files touched (the entire upstream footprint):
 | File | Hook |
 |---|---|
 | `__main__.py` | http mode → `moneta.http.run()` when `moneta.http.enabled()` (i.e. `COGNITO_USER_POOL_ID` set), else upstream Plane-OAuth+SSE |
-| `client.py` | `get_plane_client_context` calls `bearer_for(...)`, `resolve_workspace(...)`, and `build_plane_client(...)` |
-| `tools/__init__.py` | `register_moneta_tools(mcp)` + `disable_pql(mcp)` + `add_workspace_arg(mcp)` + `apply_tool_visibility(mcp)` at the end of `register_tools`; `register_milestone_tools` is **not** called (milestones are unsupported by the community edition — the file itself stays byte-pristine) |
+| `client.py` | `_workspace_slug` calls `workspace_for(...)`; `get_plane_client_context` calls `bearer_for(...)` and `build_plane_client(...)` |
+| `server.py` | `_configured` imports `ValidateActionArguments` from `moneta.middleware` (tolerates the injected `workspace_slug`) and returns `apply_moneta_surface(mcp)` after `register_tools` |
+
+`tools/__init__.py` is untouched: the fork surface is applied in `_configured`, so upstream's
+catalogue tests (`tests/tools/`, which call `register_tools` directly) keep testing the full
+upstream catalogue, while every transport (and `moneta.http`, which reuses `_configured`) serves
+the curated one.
 
 ## `plane_mcp/moneta/` modules
 
@@ -142,12 +198,19 @@ Upstream files touched (the entire upstream footprint):
 | `cognito.py` | `PlaneCognitoProvider(AWSCognitoProvider)` — captures the Cognito **id_token** and stashes `{id_token, email, cognito:username}` under the issued JWT's `upstream_claims`. |
 | `client.py` | `bearer_for(token, claims)` (forwards the id_token), `plane_request_auth()` (base_url + headers for raw **app-API** calls). |
 | `apitoken.py` | Mints/caches a Plane `APIToken` and builds the dual-header `PlaneClient` (see "The `/api/v1` 401 fix"). |
-| `selfhosted.py` | `SelfHostedPlaneClient` — work-item, cycle and module resources that normalise the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) before validating into the plane-sdk models. |
-| `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so the PQL list tools reject it with a `ToolError` instead of returning unfiltered results, and PQL is stripped from the descriptions of those tools and `search_work_items`. |
+| `selfhosted.py` | `SelfHostedPlaneClient` — normalises the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) and serves plane-sdk 0.3's Cloud-only routes from the self-hosted ones: `*-lite` lists → `projects/`, `cycles/`, `modules/`, `members/` (name and email filters applied here); `dependencies/` → `relations/`; custom relations → none; the workspace-wide work-item list and the workspace state catalogue → an error naming `project_id`. |
+| `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so `workitem`, `cycle` and `module` reject it with a `ToolError` instead of returning unfiltered results, and PQL is stripped from their descriptions; the `workitem list` line names `project_id` as required, since there is no workspace-wide list. |
+| `relations.py` | `restore_relation_types(mcp)` — upstream narrowed `workitem_relation create` to six dependency types; the self-hosted `relations/` route (`IssueRelationCreateSerializer.RELATION_TYPE_CHOICES`) also takes `relates_to` and `duplicate`, so those are routed straight to it, and the `relation_type` enum and footer advertise all eight. |
+| `trims.py` | `apply_self_hosted_trims(mcp)` — refuses arguments the server cannot honour, with the reason (`member list_workspace`'s role-slug/activity/bot filters and paging; custom relation definitions), and rewrites descriptions that name missing features (workspace state catalogue, role definitions, label fields of hidden actions). |
+| `listing.py` | `AdvertisedArguments` — a `tools/list`-only transform dropping hidden actions' arguments and the unsupported ones from each schema. Execution keeps the full schema, so a call that sends one reaches the guard that explains the refusal. |
+| `aliases.py` | `MonetaAliases` — resolves the fork's eight old add/remove names (`add_work_item_assignee`, `add_work_items_to_cycle`, ...) to the `manage_*` actions with their original argument names, on `tools/call` only and through the curated tool. |
+| `middleware.py` | `ValidateActionArguments` — upstream's stray-argument check with the injected `workspace_slug` set aside; a call naming no action is answered with the curated actions. |
+| `instructions.py` | `MONETA_INSTRUCTIONS` — replaces upstream's epic recipe (built on `workitem_type` and PQL, both unavailable here). |
+| `surface.py` | `apply_moneta_surface(mcp)` — runs `register_moneta_tools`, `disable_pql`, `restore_relation_types`, `apply_self_hosted_trims`, `add_workspace_arg`, `apply_tool_visibility` (last), adds the `MonetaAliases` and `AdvertisedArguments` transforms and sets the instructions. |
 | `workspace.py` | `resolve_workspace(claim, env)` precedence resolver + `_fetch_workspaces()` (raw GET `/api/users/me/workspaces/`). |
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
-| `visibility.py` | `apply_tool_visibility(mcp)` — exposes only the curated `ENABLED_TOOLS` set on `tools/list` (see "Tool visibility"). |
+| `visibility.py` | `apply_tool_visibility(mcp)` — exposes only the curated resources and actions in `ENABLED_ACTIONS` (see "Tool visibility"). |
 | `storage.py` | `build_oauth_storage()` — Valkey **DB 12** + Fernet for the Cognito provider's OAuth state (via `MCP_OAUTH_STORAGE_URL`). |
 | `http.py` | `enabled()` / `run()` — the Cognito HTTP server entry point + self-contained JSON logging. |
 
@@ -208,7 +271,7 @@ Non-Cognito paths are untouched: PAT / stdio env → `X-Api-Key`-only; Plane-OAu
 Claude can't send `X-Workspace-Slug` and Cognito tokens have no `workspace_slug` claim. So every
 workspace-scoped tool gets an **optional `workspace_slug` argument**, injected at startup by
 `moneta/inject.py:add_workspace_arg` via FastMCP's `Tool.from_tool(transform_fn=…)` + `forward()`
-(the arg is stashed in a `ContextVar`). This avoids editing the ~144 tool signatures and keeps
+(the arg is stashed in a `ContextVar`). This avoids editing every resource tool's signature and keeps
 **concurrent Claude conversations isolated** (per-call, not sticky/per-user).
 
 `get_plane_client_context` resolves the workspace with this precedence:
@@ -217,29 +280,53 @@ workspace-scoped tool gets an **optional `workspace_slug` argument**, injected a
 per-call workspace_slug arg (ContextVar)  >  token claim (PAT/Plane-OAuth)  >  PLANE_WORKSPACE_SLUG env  >  WorkspaceError
 ```
 
+The env default applies only to stdio and Cognito connections (no slug claim). A Plane-OAuth or
+PAT token never borrows it: without the per-call arg it uses its own claim, and a blank claim
+raises `WorkspaceError` (the fork's edit to upstream's `tests/test_client.py` expects that). The
+claim is a default, not a boundary: the per-call arg can name another workspace, and Plane's own
+membership checks decide whether the credential may act there.
+
 `list_workspaces` (the discovery tool) is the only tool skipped by the injector. Usage in Claude:
 call `list_workspaces` to get slugs, then pass `workspace_slug` per tool call.
 
-## Tool visibility (standard MCPO listing)
+## Tool visibility (curated resources and actions)
 
-`tools/list` returns a **fixed curated set** — the MCPO convention, where each listed tool becomes
-one generated HTTP endpoint. There is no runtime discovery layer: the former `list_available_tools`
-/ `enable_tools` / `execute_tool` meta tools were removed, so an LLM sees the real tool list on
-connect and calls tools directly.
+Upstream advertises one action-dispatch tool per Plane resource (30 tools). `tools/list` here
+returns a **fixed curated subset**, and each listed resource advertises only its curated actions.
+There is no runtime discovery layer: an LLM sees the real surface on connect and calls it directly.
 
-`moneta/visibility.py` holds `ENABLED_TOOLS` (46 names) plus `ALWAYS_ENABLED = {list_workspaces}`,
-and applies them via `mcp._local_provider.enable(names=…, only=True, components={"tool"})`. The
-other 61 tools stay **registered but hidden** — absent from `tools/list` and rejected on
-`tools/call` — so re-activating one is a one-line change, not a re-implementation.
+`moneta/visibility.py` holds `ENABLED_ACTIONS` (resource → actions) plus
+`ALWAYS_ENABLED = {list_workspaces}`:
 
-- `apply_tool_visibility(mcp)` must run **last** in `register_tools`: `add_workspace_arg` does
-  `remove_tool()` + `add_tool()` per tool, which would discard an earlier filter.
-- `PLANE_MCP_ENABLED_TOOLS` (comma-separated) **replaces** the curated set at runtime;
-  `list_workspaces` is unioned in unconditionally so a partial override can't brick workspace
-  resolution.
-- Milestone tools are not registered at all (community edition lacks the endpoints).
-- `tests/test_visibility.py` asserts `tools/list` equals the whitelist exactly and that a hidden
-  tool (`create_project`) is rejected on call.
+| Resource | Actions |
+|---|---|
+| `project` | list, retrieve, update |
+| `workitem` | list, retrieve, retrieve_by_identifier, search, create, update, manage_assignee, manage_label |
+| `workitem_comment` | list, retrieve, create, update, delete |
+| `workitem_link` | list, retrieve |
+| `workitem_relation` | list, create (no delete: the self-hosted API has no remove route) |
+| `cycle` | list, retrieve, create, update, list_workitems, manage_workitems, transfer_workitems, complete |
+| `module` | list, retrieve, list_workitems, manage_workitems |
+| `label`, `state` | list, retrieve (state needs `project_id`: no workspace state catalogue) |
+| `member` | me, list_workspace, list_project |
+
+- A hidden resource stays **registered but hidden** (`_local_provider.enable(names=…, only=True)`),
+  absent from `tools/list` and rejected on `tools/call`.
+- A listed resource with hidden actions is wrapped by `restrict_actions`: its `action` enum and
+  description name only the curated actions, and any other action raises a `ToolError`. Upstream's
+  retired tool names (`LegacyNames`) resolve to the resource with the action pre-bound, so
+  `delete_work_item` is refused by the same guard and `list_milestones` is an unknown tool.
+- Arguments only hidden actions use are dropped from the listing by `AdvertisedArguments`, and
+  a refused action can carry a reason (`REFUSED_ACTION_REASONS`, e.g. relation delete).
+- `apply_tool_visibility(mcp)` must run **last** of the tool rewrites in `apply_moneta_surface`:
+  `disable_pql`, `restore_relation_types`, `apply_self_hosted_trims` and `add_workspace_arg`
+  remove and re-add tools, which would discard an earlier filter.
+- Besides upstream's retired names, `MonetaAliases` keeps the fork's eight add/remove names
+  callable (not listed); they pass through the same guard.
+- `PLANE_MCP_ENABLED_TOOLS` (comma-separated) **replaces** the curated set at runtime. Each entry
+  is a resource name (all its actions) or a retired tool name (the one action it maps to);
+  `list_workspaces` is always kept.
+- `tests/test_visibility.py` asserts the listing equals the curated set exactly, per action.
 
 ## Moneta environment variables
 
@@ -253,16 +340,15 @@ other 61 tools stay **registered but hidden** — absent from `tools/list` and r
 | `PLANE_BASE_URL` | Public mPass URL (e.g. `https://pm.foss.local.dev`); used for both app routes and `/api/v1`. |
 | `REQUESTS_CA_BUNDLE` | Devstack mkcert CA, so `requests`/plane-sdk trust the self-signed cert. |
 | `MCP_LOG_LEVEL` | `DEBUG` raises the fastmcp/moneta loggers (debug traces gate on `moneta.http._configure_logging`). |
-| `PLANE_MCP_ENABLED_TOOLS` | Optional comma-separated tool whitelist; **replaces** `ENABLED_TOOLS` (see "Tool visibility"). Unset in devstack. |
+| `PLANE_MCP_ENABLED_TOOLS` | Optional comma-separated resource or retired tool names; **replaces** `ENABLED_ACTIONS` (see "Tool visibility"). Unset in devstack. |
 
 ## Devstack
 
-- Service in `foss-server-bundle/docker-compose.dev.yml` is **`plane-mcp`** (modeled on
-  `surfsense-mcp`), Compose profile **`mcp`**, router host `pm-mcp.${PLATFORM_DOMAIN}`. The old
+- Service in `foss-server-bundle/docker-compose.dev.yml` is **`plane-mcp`**, Compose profile **`mcp`**, router host `pm-mcp.${PLATFORM_DOMAIN}`. The old
   `plane-mcp-server:` block is deprecated.
 - No source bind-mount — code is baked into the image, so **rebuild** to pick up changes:
   `make dev.build.plane-mcp && make dev.restart.plane-mcp`.
 - Logs: `docker logs plane-mcp`. Tests run without a live backend (httpx/requests mocked):
-  `pytest`. In `test_integration.py`, `test_tools_availability` needs live-backend env and
-  otherwise fails by design; `test_full_integration` additionally needs its write-path tools
-  opted in via `PLANE_MCP_ENABLED_TOOLS` and is skipped otherwise.
+  `pytest`. `test_integration.py` is skipped unless `PLANE_TEST_API_KEY` and
+  `PLANE_TEST_WORKSPACE_SLUG` point at a live server; `test_full_integration` additionally needs
+  its write-path actions opted in via `PLANE_MCP_ENABLED_TOOLS`.

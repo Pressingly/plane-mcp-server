@@ -1,7 +1,7 @@
 """End-to-end test for the OAuth redirect attack reported by security researcher.
 
 Covers the upstream Plane-OAuth provider. The Cognito path, including clients
-stored before the allowlist was set, is covered in test_redirect_allowlist.py.
+stored before the allowlist was set, is covered in test_cognito_redirect_allowlist.py.
 
 Attack scenario:
   1. Attacker registers a malicious OAuth client with redirect_uri=https://attacker.com/steal
@@ -24,20 +24,11 @@ from starlette.routing import Mount
 from starlette.testclient import TestClient
 
 from plane_mcp.auth import PlaneOAuthProvider
+from plane_mcp.server import get_allowed_client_redirect_uris
 
-
-# Exact allowed patterns from plane_mcp/server.py
-ALLOWED_REDIRECT_URI_PATTERNS = [
-    "http://localhost:*",
-    "http://localhost:*/*",
-    "http://127.0.0.1:*",
-    "http://127.0.0.1:*/*",
-    "cursor://*",
-    "vscode://*",
-    "vscode-insiders://*",
-    "windsurf://*",
-    "claude://*",
-]
+# The allowlist the server actually ships. Copying it here let it drift, and a
+# stale copy silently stops testing the patterns in production.
+ALLOWED_REDIRECT_URI_PATTERNS = get_allowed_client_redirect_uris()
 
 
 @pytest.fixture(scope="module")
@@ -160,9 +151,7 @@ class TestOAuthRedirectAttack:
         )
 
         # Should proceed with the OAuth flow (302 to upstream), not error
-        assert response.status_code != 400, (
-            f"Legitimate redirect URI was rejected: {response.text}"
-        )
+        assert response.status_code != 400, f"Legitimate redirect URI was rejected: {response.text}"
 
     def test_cors_blocks_cross_origin_token_theft(self, client: TestClient) -> None:
         """Step 5: Even if attacker got a code, CORS blocks cross-origin token exchange.

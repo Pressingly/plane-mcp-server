@@ -9,11 +9,46 @@ from datetime import datetime, timezone
 from enum import Enum
 
 import uvicorn
+from fastmcp.server.dependencies import get_access_token
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount
 
 from plane_mcp.server import get_header_mcp, get_oauth_mcp, get_stdio_mcp
+
+LOG_USER_INFO: bool = os.getenv("LOG_USER_INFO", "").lower() == "true"
+
+
+class UserContextFilter(logging.Filter):
+    """Attach authenticated user/workspace context to every log record.
+
+    Pulls the current request's access token via FastMCP's dependency, which
+    returns None (never raises) outside a request context — so startup logs fall
+    back to environment config and otherwise carry no user info.
+
+    Always logs the opaque user id (sub claim) and the workspace slug; neither is
+    PII. The display name IS PII and is only included when LOG_USER_INFO=true.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        user_id = None
+        display_name = None
+        workspace_slug = None
+        try:
+            token = get_access_token()
+            if token:
+                user_id = token.claims.get("sub")
+                workspace_slug = token.claims.get("workspace_slug")
+                if LOG_USER_INFO:
+                    display_name = token.claims.get("display_name")
+        except Exception as exc:
+            # Never let logging enrichment break a request, but leave a signal.
+            record.user_context_enrichment_error = type(exc).__name__
+        record.user_id = user_id
+        record.display_name = display_name
+        # stdio mode has no token; fall back to the configured workspace.
+        record.workspace_slug = workspace_slug or os.getenv("PLANE_WORKSPACE_SLUG") or None
+        return True
 
 
 class JSONFormatter(logging.Formatter):
@@ -24,13 +59,33 @@ class JSONFormatter(logging.Formatter):
             "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
         }
+        # The logging middleware emits a JSON object as its log message. Promote
+        # those keys to top-level fields (event, method, tool, duration_ms, ...)
+        raw_message = record.getMessage()
+        try:
+            parsed = json.loads(raw_message)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            log_entry.update(parsed)
+        else:
+            log_entry["message"] = raw_message
+        user_id = getattr(record, "user_id", None)
+        if user_id:
+            log_entry["user_id"] = user_id
+        workspace_slug = getattr(record, "workspace_slug", None)
+        if workspace_slug:
+            log_entry["workspace_slug"] = workspace_slug
+        display_name = getattr(record, "display_name", None)
+        if display_name:
+            log_entry["display_name"] = display_name
+        err = getattr(record, "user_context_enrichment_error", None)
+        if err:
+            log_entry["user_context_enrichment_error"] = err
         if record.exc_info and record.exc_info[1]:
-            log_entry["error"] = {
-                "type": type(record.exc_info[1]).__name__,
-                "message": str(record.exc_info[1]),
-            }
+            log_entry["error"] = str(record.exc_info[1])
+            log_entry["error_type"] = type(record.exc_info[1]).__name__
         return json.dumps(log_entry)
 
 
@@ -44,6 +99,7 @@ def configure_json_logging():
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JSONFormatter())
+    handler.addFilter(UserContextFilter())
     fastmcp_logger.addHandler(handler)
     fastmcp_logger.setLevel(logging.INFO)
     fastmcp_logger.propagate = False
@@ -140,6 +196,7 @@ def main() -> None:
                 uv_logger.removeHandler(h)
             uv_handler = logging.StreamHandler(sys.stderr)
             uv_handler.setFormatter(JSONFormatter())
+            uv_handler.addFilter(UserContextFilter())
             uv_logger.addHandler(uv_handler)
 
         logger.info("Starting HTTP server at URLs: /mcp and /header/mcp")
