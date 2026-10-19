@@ -26,4 +26,5 @@ class CompactResponses(Middleware):
         return compacted_result(await call_next(context))
 
     def _operation(self, name: str, arguments: dict[str, Any]) -> tuple[str, str | None]:
-        return self._aliases.get(name) or (name, arguments.get("action"))
+        action = arguments.get("action")
+        return self._aliases.get(name) or (name, action if isinstance(action, str) else None)

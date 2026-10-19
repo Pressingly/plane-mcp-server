@@ -47,3 +47,9 @@ def test_the_compact_set_is_made_of_real_work_item_fields():
 
     known = set(WorkItem.model_fields) | {"assignees", "labels"}
     assert set(COMPACT_WORK_ITEM_FIELDS.split(",")) <= known
+
+
+def test_an_unhashable_action_is_not_an_operation():
+    from plane_mcp.moneta.compaction import CompactResponses
+
+    assert CompactResponses()._operation("workitem", {"action": ["list"]}) == ("workitem", None)
