@@ -6,7 +6,7 @@ import pytest
 from fastmcp import Client, FastMCP
 
 from plane_mcp.moneta.aliases import ALIASES
-from plane_mcp.moneta.annotations import READ_NAMES, Effect, combined, effect_of, hints
+from plane_mcp.moneta.annotations import READ_NAMES, Effect, annotate_tools, combined, effect_of, hints
 from plane_mcp.moneta.visibility import ENABLED_ACTIONS, _registered_tools
 from plane_mcp.server import get_header_mcp, get_stdio_mcp
 from plane_mcp.tools.registry import RESOURCES, alias_table
@@ -234,3 +234,8 @@ async def test_retired_names_are_never_less_severe_than_the_action_they_bind(ser
 def test_the_header_transport_publishes_both_hints(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PLANE_MCP_ENABLED_TOOLS", raising=False)
     assert all(None not in hint_pair(tool) for tool in _registered_tools(get_header_mcp()))
+
+
+def test_an_unreadable_registry_fails_loudly() -> None:
+    with pytest.raises(RuntimeError, match="tool registry"):
+        annotate_tools(FastMCP("empty"))

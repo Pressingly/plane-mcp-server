@@ -86,6 +86,8 @@ def annotate_tools(mcp: FastMCP) -> None:
     """Set both hints on every registered tool, hidden ones included."""
     enabled = enabled_actions()
     tools = _registered_tools(mcp)
+    if not tools:
+        raise RuntimeError("cannot publish tool annotations: the tool registry is empty or unreadable")
     for tool in tools:
         mcp._local_provider.remove_tool(tool.name)
         mcp.add_tool(annotated(tool, enabled))
