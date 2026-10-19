@@ -16,6 +16,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from plane_mcp.moneta.aliases import MonetaAliases
+from plane_mcp.moneta.compaction import CompactResponses
 from plane_mcp.moneta.inject import add_workspace_arg
 from plane_mcp.moneta.instructions import MONETA_INSTRUCTIONS
 from plane_mcp.moneta.listing import AdvertisedArguments
@@ -34,6 +35,7 @@ def apply_moneta_surface(mcp: FastMCP) -> FastMCP:
     apply_self_hosted_trims(mcp)
     add_workspace_arg(mcp)
     apply_tool_visibility(mcp)
+    mcp.add_middleware(CompactResponses())
     mcp.add_transform(MonetaAliases())
     mcp.add_transform(AdvertisedArguments(enabled_actions()))
     mcp.instructions = MONETA_INSTRUCTIONS
