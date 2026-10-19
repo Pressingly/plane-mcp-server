@@ -5,10 +5,11 @@ from __future__ import annotations
 import pytest
 from fastmcp import Client, FastMCP
 
+from plane_mcp.moneta.aliases import ALIASES
 from plane_mcp.moneta.annotations import READ_NAMES, Effect, combined, effect_of, hints
 from plane_mcp.moneta.visibility import ENABLED_ACTIONS, _registered_tools
-from plane_mcp.server import get_stdio_mcp
-from plane_mcp.tools.registry import RESOURCES
+from plane_mcp.server import get_header_mcp, get_stdio_mcp
+from plane_mcp.tools.registry import RESOURCES, alias_table
 
 READ = (True, False)
 ADD = (False, False)
@@ -212,3 +213,24 @@ async def test_enabling_a_hidden_tool_later_lists_it_labelled(monkeypatch: pytes
     assert tools["milestone"] == DESTRUCTIVE
     assert tools["workitem_activity"] == READ
     assert tools["workitem"] == DESTRUCTIVE
+
+
+def severity(tool) -> Effect:
+    read_only, destructive = hint_pair(tool)
+    if read_only:
+        return Effect.READ
+    return Effect.DESTRUCTIVE if destructive else Effect.ADD
+
+
+@pytest.mark.anyio
+async def test_retired_names_are_never_less_severe_than_the_action_they_bind(server: FastMCP) -> None:
+    bound = {**alias_table(), **{name: (alias.resource, alias.action) for name, alias in ALIASES.items()}}
+    for name, (resource, action) in bound.items():
+        tool = await server.get_tool(name)
+        if tool is not None and action in ENABLED_ACTIONS.get(resource, frozenset()):
+            assert severity(tool) >= effect_of(action), name
+
+
+def test_the_header_transport_publishes_both_hints(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PLANE_MCP_ENABLED_TOOLS", raising=False)
+    assert all(None not in hint_pair(tool) for tool in _registered_tools(get_header_mcp()))
