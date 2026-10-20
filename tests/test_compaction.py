@@ -179,3 +179,45 @@ def test_reply_sizes_shrink(plane, capsys):
     assert cuts["workitem list"] >= 60
     assert cuts["cycle list_workitems"] >= 60
     assert all(cut > 0 for cut in cuts.values())
+
+
+JSON_ATTACHMENT = b'{"clear_me":null,"enabled":true}'
+
+
+@pytest.fixture
+def json_attachment(monkeypatch: pytest.MonkeyPatch) -> None:
+    from plane_mcp.tools import workitem_attachment
+
+    attachment = SimpleNamespace(id="attachment-1", attributes={"name": "flags.json", "type": "application/json"})
+    client = SimpleNamespace(
+        work_items=SimpleNamespace(
+            attachments=SimpleNamespace(
+                list=lambda **_: [attachment],
+                get_download_url=lambda **_: "https://files.example.com/flags.json",
+            )
+        )
+    )
+    response = SimpleNamespace(content=JSON_ATTACHMENT, raise_for_status=lambda: None)
+    monkeypatch.setattr(workitem_attachment, "get_plane_client_context", lambda: (client, "acme"))
+    monkeypatch.setattr(workitem_attachment.requests, "get", lambda *args, **kwargs: response)
+    monkeypatch.setenv("PLANE_MCP_ENABLED_TOOLS", "workitem_attachment,read_work_item_attachment")
+
+
+READ_ARGUMENTS = {
+    "project_id": payloads.PROJECT,
+    "attachment_id": "attachment-1",
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("workitem_attachment", {"action": "read", **READ_ARGUMENTS, "workitem_id": WORK_ITEM_ID}),
+        ("read_work_item_attachment", {**READ_ARGUMENTS, "work_item_id": WORK_ITEM_ID}),
+    ],
+)
+def test_an_attachment_read_is_returned_verbatim(json_attachment, tool, arguments):
+    result = _call(True, tool, **arguments)
+    assert not result.is_error
+    assert result.content[0].text == JSON_ATTACHMENT.decode()
+    assert result.content[0].text == _call(False, tool, **arguments).content[0].text
