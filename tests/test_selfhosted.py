@@ -253,7 +253,7 @@ def test_retrieve_work_item_accepts_bare_uuid_relations(server, monkeypatch):
 
     assert result["assignees"][0]["id"] == USER
     assert result["labels"][0]["id"] == LABEL
-    assert result["parent"] is None
+    assert "parent" not in result
     endpoint, params = fake.gets[0]
     assert endpoint == f"acme/projects/{PROJECT}/work-items/{ITEM}"
     assert params["expand"] == "assignees,labels"
@@ -327,7 +327,7 @@ def test_list_work_items_tolerates_expanded_parent(server, monkeypatch):
 
     result = call(server, "workitem", {"action": "list", "project_id": PROJECT, "expand": "parent"})
 
-    assert result["results"][0]["parent"] is None
+    assert "parent" not in result["results"][0]
     assert result["next_cursor"] == "25:1:0"
 
 
@@ -460,7 +460,7 @@ def test_container_work_item_lists_tolerate_expanded_null_foreign_keys(
     result = call(server, tool, {"action": "list_workitems", "project_id": PROJECT, **container_arg, "expand": expand})
 
     item = result["results"][0]
-    assert {field: item[field] for field in EXPANDED_NULL_FOREIGN_KEYS} == dict.fromkeys(EXPANDED_NULL_FOREIGN_KEYS)
+    assert not set(EXPANDED_NULL_FOREIGN_KEYS) & set(item)
     assert not any(key.endswith("_detail") for key in item)
     assert fake.gets[0][0] == f"acme/projects/{PROJECT}/{endpoint}"
     assert fake.gets[0][1]["expand"] == expand
