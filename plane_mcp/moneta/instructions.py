@@ -19,4 +19,9 @@ working in multi-workspace mode.
 Work items are listed per project: `workitem list` needs project_id. PQL filtering
 is not supported on this server, so page through `workitem list` (order_by, cursor)
 and filter the returned items yourself, or use `workitem search` for text.
+
+Replies leave out fields that have no value. Work item lists (`workitem list`,
+`workitem list_archived`, `cycle list_workitems`, `module list_workitems`) return a
+compact set of fields unless you pass `fields` (comma-separated, e.g.
+`fields="id,name,description_html"`) or `expand`; `fields="*"` returns every field.
 """
