@@ -65,7 +65,8 @@ ENABLED_ACTIONS: Mapping[str, frozenset[str]] = {
     ),
     # update/delete exposed so the agent can correct or retract a comment it wrote itself.
     "workitem_comment": frozenset({"list", "retrieve", "create", "update", "delete"}),
-    "workitem_link": frozenset({"list", "retrieve"}),
+    # update/delete exposed so the agent can correct or remove a link it attached itself.
+    "workitem_link": frozenset({"list", "retrieve", "create", "update", "delete"}),
     # No delete: the self-hosted API has no route that removes a relation.
     "workitem_relation": frozenset({"list", "create"}),
     # manage_workitems is the only way to undo an add: transfer moves every

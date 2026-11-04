@@ -305,7 +305,7 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
 | `project` | list, retrieve, update |
 | `workitem` | list, retrieve, retrieve_by_identifier, search, create, update, manage_assignee, manage_label |
 | `workitem_comment` | list, retrieve, create, update, delete |
-| `workitem_link` | list, retrieve |
+| `workitem_link` | list, retrieve, create, update, delete |
 | `workitem_relation` | list, create (no delete: the self-hosted API has no remove route) |
 | `cycle` | list, retrieve, create, update, list_workitems, manage_workitems, transfer_workitems, complete |
 | `module` | list, retrieve, list_workitems, manage_workitems |
