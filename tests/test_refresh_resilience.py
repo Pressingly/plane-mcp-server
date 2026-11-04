@@ -10,7 +10,10 @@ upstream token endpoint and a session seeded straight into the OAuth stores.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import logging
+import shlex
 import time
 from typing import get_args
 
@@ -23,9 +26,10 @@ from fastmcp.server.auth.oauth_proxy.models import JTIMapping, RefreshTokenMetad
 from fastmcp.server.auth.oidc_proxy import OIDCConfiguration, OIDCProxy
 from fastmcp.server.auth.providers.aws import AWSCognitoProvider
 from key_value.aio.stores.memory import MemoryStore
-from mcp.server.auth.provider import RefreshToken, TokenErrorCode
+from mcp.server.auth.provider import RefreshToken, TokenError, TokenErrorCode
 from mcp.shared.auth import OAuthToken
 
+from plane_mcp.moneta import cognito, session_log
 from plane_mcp.moneta import http as moneta_http
 from plane_mcp.moneta.refresh import RecentRefreshes, is_transient_upstream_failure
 
@@ -59,7 +63,7 @@ def _jwt(claims: dict) -> str:
 def _cognito_tokens(lifetime: int = 3600) -> dict:
     return {
         "access_token": _jwt({"exp": int(time.time()) + lifetime, "sub": "user-sub"}),
-        "id_token": _jwt({"email": "user@example.test", "cognito:username": "mpass-1"}),
+        "id_token": _jwt({"sub": "user-sub", "email": "user@example.test", "cognito:username": "mpass-1"}),
         "token_type": "Bearer",
         "expires_in": lifetime,
     }
@@ -334,8 +338,177 @@ def test_fastmcp_refresh_contract_still_matches_the_override():
         "scopes",
     ]
     assert list(inspect.signature(OAuthProxy.load_refresh_token).parameters) == ["self", "client", "refresh_token"]
+    assert list(inspect.signature(OAuthProxy._try_transparent_refresh).parameters) == ["self", "upstream_token_set"]
     assert callable(OAuthProxy._get_refresh_lock)
     assert "temporarily_unavailable" not in get_args(TokenErrorCode)
     assert 'raise TokenError("invalid_grant", f"Upstream refresh failed: {e}") from e' in inspect.getsource(
         OAuthProxy.exchange_refresh_token
     )
+
+
+@pytest.fixture
+def warnings_log(caplog, monkeypatch):
+    """Capture the provider's WARNING lines; the ``fastmcp`` logger does not propagate to root."""
+    monkeypatch.setattr(logging.getLogger("fastmcp"), "propagate", True)
+    caplog.set_level(logging.WARNING, logger=cognito.logger.name)
+    return caplog
+
+
+def _lines(caplog, message: str) -> list[str]:
+    provider_records = (r for r in caplog.records if r.name == cognito.logger.name)
+    return [r.getMessage() for r in provider_records if r.getMessage().startswith(message)]
+
+
+def _fields(line: str) -> dict[str, str]:
+    return dict(pair.split("=", 1) for pair in shlex.split(line.split(": ", 1)[1]))
+
+
+def _fingerprint() -> str:
+    return hashlib.sha256(UPSTREAM_TOKEN_ID.encode()).hexdigest()[:8]
+
+
+async def _seed_access_token(session: Session, jti: str = "access-jti", mapped: bool = True) -> str:
+    access_token = session.provider.jwt_issuer.issue_access_token(
+        client_id=session.client_id,
+        scopes=["openid"],
+        jti=jti,
+        expires_in=3600,
+        upstream_claims={"id_token": _cognito_tokens()["id_token"]},
+    )
+    if mapped:
+        await session.provider._jti_mapping_store.put(
+            key=jti,
+            value=JTIMapping(jti=jti, upstream_token_id=UPSTREAM_TOKEN_ID, created_at=time.time()),
+            ttl=3600,
+        )
+    return access_token
+
+
+def test_a_transient_refresh_failure_names_the_user_client_and_session_age(upstream, warnings_log):
+    upstream.outcomes.append(httpx.Response(502, text="Bad Gateway"))
+
+    async def scenario(session: Session):
+        await session.refresh()
+        [line] = _lines(warnings_log, "Upstream token refresh failed: ")
+        fields = _fields(line)
+
+        assert fields["sub"] == "user-sub"
+        assert fields["email"] == "user@example.test"
+        assert fields["username"] == "mpass-1"
+        assert fields["client_id"] == session.client_id
+        assert fields["session_age"].startswith("0d01h00m")
+        assert fields["upstream_token"] == _fingerprint()
+        assert fields["error"] == "HTTPStatusError"
+        assert fields["status"] == "502"
+        assert fields["oauth_error"] == "-"
+        assert fields["retryable"] == "true"
+
+    _run(scenario)
+
+
+def test_an_upstream_rejection_is_logged_as_not_retryable_with_the_oauth_error(upstream, warnings_log):
+    body = {"error": "invalid_grant", "error_description": "Refresh Token has expired"}
+    upstream.outcomes.append(httpx.Response(400, json=body))
+
+    async def scenario(session: Session):
+        await session.refresh()
+        [line] = _lines(warnings_log, "Upstream token refresh failed: ")
+        fields = _fields(line)
+
+        assert fields["oauth_error"] == "invalid_grant"
+        assert fields["detail"] == "Refresh Token has expired"
+        assert fields["retryable"] == "false"
+        assert fields["sub"] == "user-sub"
+
+    _run(scenario)
+
+
+def test_a_refresh_without_a_session_names_the_user_from_the_sealed_claims(upstream, warnings_log):
+    async def scenario(session: Session):
+        orphan = session.provider.jwt_issuer.issue_refresh_token(
+            client_id=session.client_id,
+            scopes=["openid"],
+            jti="orphan-refresh-jti",
+            expires_in=3600,
+            upstream_claims={"id_token": _cognito_tokens()["id_token"]},
+        )
+        refresh_token = RefreshToken(token=orphan, client_id=session.client_id, scopes=["openid"], expires_at=None)
+        client = await session.provider.get_client(session.client_id)
+
+        with pytest.raises(TokenError):
+            await session.provider.exchange_refresh_token(client, refresh_token, ["openid"])
+
+        [line] = _lines(warnings_log, "Upstream token refresh failed: ")
+        fields = _fields(line)
+        assert fields["username"] == "mpass-1"
+        assert fields["client_id"] == session.client_id
+        assert fields["upstream_token"] == "-"
+        assert fields["retryable"] == "false"
+        assert upstream.calls == 0
+
+    _run(scenario)
+
+
+def test_a_failed_transparent_refresh_and_its_401_are_warnings_with_identity(upstream, warnings_log):
+    upstream.outcomes.append(httpx.ReadTimeout("upstream timed out"))
+
+    async def scenario(session: Session):
+        assert await session.provider.load_access_token(await _seed_access_token(session)) is None
+
+        [refresh_line] = _lines(warnings_log, "Transparent upstream refresh failed: ")
+        [rejected_line] = _lines(warnings_log, "Upstream token validation failed, returning 401: ")
+        assert _fields(refresh_line)["error"] == "ReadTimeout"
+        assert _fields(refresh_line)["upstream_token"] == _fingerprint()
+        assert _fields(rejected_line)["client_id"] == session.client_id
+        assert _fields(rejected_line)["email"] == "user@example.test"
+        assert _fields(rejected_line)["refresh_token"] == "present"
+
+    _run(scenario)
+
+
+def test_a_valid_token_whose_session_is_gone_still_names_the_user(upstream, warnings_log):
+    """A Valkey flush drops every mapping; each user's next request must say who died."""
+
+    async def scenario(session: Session):
+        access_token = await _seed_access_token(session, jti="orphaned-jti", mapped=False)
+
+        assert await session.provider.load_access_token(access_token) is None
+
+        [line] = _lines(warnings_log, "Upstream token validation failed, returning 401: ")
+        fields = _fields(line)
+        assert fields["client_id"] == session.client_id
+        assert fields["username"] == "mpass-1"
+        assert fields["email"] == "user@example.test"
+        assert fields["upstream_token"] == "-"
+
+    _run(scenario)
+
+
+def test_an_invalid_fastmcp_token_stays_out_of_the_warnings(upstream, warnings_log):
+    async def scenario(session: Session):
+        assert await session.provider.load_access_token("not-a-token") is None
+        assert not _lines(warnings_log, "Upstream token validation failed")
+
+    _run(scenario)
+
+
+def test_session_failure_lines_never_carry_a_token(upstream, warnings_log):
+    upstream.outcomes.append(httpx.Response(502, text="Bad Gateway"))
+
+    async def scenario(session: Session):
+        stored = await session.stored_upstream()
+        await session.refresh()
+
+        for secret in (session.refresh_token, stored.refresh_token, stored.access_token, UPSTREAM_TOKEN_ID):
+            assert secret not in warnings_log.text
+
+    _run(scenario)
+
+
+def test_format_age_spans_days():
+    assert session_log.format_age(5 * 86400 + 2 * 3600 + 13 * 60 + 7) == "5d02h13m07s"
+    assert session_log.format_age(-3) == "0d00h00m00s"
+
+
+def test_render_quotes_spaced_values_and_marks_missing_ones():
+    assert session_log.render({"a": None, "b": "x y", "c": 3}) == 'a=- b="x y" c=3'

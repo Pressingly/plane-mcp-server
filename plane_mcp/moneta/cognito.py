@@ -33,9 +33,9 @@ The inbound access token is still independently JWKS-verified on every request b
 the stock verifier, so this adds no auth-bypass surface — it only enriches the
 identity forwarded downstream.
 
-This module imports no ``plane_mcp`` module other than the leaf
-:mod:`plane_mcp.moneta.refresh`, so it stays import-cycle-free as the module
-other fork modules build on.
+This module imports no ``plane_mcp`` module other than the leaves
+:mod:`plane_mcp.moneta.refresh` and :mod:`plane_mcp.moneta.session_log`, so it
+stays import-cycle-free as the module other fork modules build on.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ import httpx
 import jwt
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from fastmcp.server.auth.auth import AccessToken
+from fastmcp.server.auth.oauth_proxy.models import UpstreamTokenSet
 from fastmcp.server.auth.providers.aws import AWSCognitoProvider
 from fastmcp.utilities.logging import get_logger
 from mcp.server.auth.provider import RefreshToken, TokenError
@@ -60,6 +61,7 @@ from plane_mcp.moneta.refresh import (
     raise_for_throttling,
     with_retryable_token_endpoint,
 )
+from plane_mcp.moneta.session_log import describe_failure, describe_session, render, session_fields
 
 logger = get_logger(__name__)
 
@@ -239,14 +241,14 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         replayed = self._replayed_tokens(refresh_token, client)
         if replayed is not None:
             return replayed
-        upstream_token_id = await self._upstream_token_id_of(refresh_token.token)
+        upstream_token_id = await self._upstream_token_id_of(refresh_token.token, "refresh")
         if upstream_token_id is None:
-            return await self._exchange_with_upstream(client, refresh_token, scopes)
+            return await self._exchange_with_upstream(client, refresh_token, scopes, upstream_token_id)
         async with self._get_refresh_lock(upstream_token_id):
             replayed = self._replayed_tokens(refresh_token, client)
             if replayed is not None:
                 return replayed
-            tokens = await self._exchange_with_upstream(client, refresh_token, scopes)
+            tokens = await self._exchange_with_upstream(client, refresh_token, scopes, upstream_token_id)
             self._recent_refreshes.record(refresh_token, tokens)
             return tokens
 
@@ -257,12 +259,21 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         logger.info("Replayed tokens for a refresh token rotated moments ago (client=%s)", client.client_id)
         return replay.tokens
 
-    async def _upstream_token_id_of(self, refresh_token: str) -> str | None:
+    async def _upstream_token_id_of(self, token: str, token_use: str) -> str | None:
+        payload = self._verified_payload(token, token_use)
+        return await self._upstream_token_id_for(payload) if payload else None
+
+    def _verified_payload(self, token: str, token_use: str) -> dict[str, Any] | None:
         try:
-            payload = self.jwt_issuer.verify_token(refresh_token, expected_token_use="refresh")
+            return self.jwt_issuer.verify_token(token, expected_token_use=token_use)
         except Exception:
             return None
-        mapping = await self._jti_mapping_store.get(key=payload["jti"])
+
+    async def _upstream_token_id_for(self, payload: dict[str, Any]) -> str | None:
+        try:
+            mapping = await self._jti_mapping_store.get(key=payload["jti"])
+        except Exception:
+            return None
         return mapping.upstream_token_id if mapping else None
 
     async def _exchange_with_upstream(
@@ -270,6 +281,7 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         client: OAuthClientInformationFull,
         refresh_token: RefreshToken,
         scopes: list[str],
+        upstream_token_id: str | None,
     ) -> OAuthToken:
         """Run FastMCP's exchange, keeping a flaky upstream from voiding the grant.
 
@@ -279,15 +291,54 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         """
         try:
             return await super().exchange_refresh_token(client, refresh_token, scopes)
-        except TokenError as rejected:
-            if not is_transient_upstream_failure(rejected.__cause__):
-                raise
-            logger.warning(
-                "Upstream refresh failed transiently; answering temporarily_unavailable (client=%s): %s",
-                client.client_id,
-                rejected.__cause__,
+        except Exception as exc:
+            transient = isinstance(exc, TokenError) and is_transient_upstream_failure(exc.__cause__)
+            failure = describe_failure(
+                await self._stored_token_set(upstream_token_id),
+                exc.__cause__ or exc,
+                client_id=client.client_id,
+                sealed_claims=self._sealed_upstream_claims(refresh_token.token, "refresh"),
             )
-            raise UpstreamRefreshUnavailable("Upstream token endpoint unavailable; retry shortly") from rejected
+            logger.warning("Upstream token refresh failed: %s %s", failure, render({"retryable": _flag(transient)}))
+            if not transient:
+                raise
+            raise UpstreamRefreshUnavailable("Upstream token endpoint unavailable; retry shortly") from exc
+
+    async def _try_transparent_refresh(self, upstream_token_set: UpstreamTokenSet) -> UpstreamTokenSet:
+        """Surface a failed in-request refresh; FastMCP logs it only at DEBUG before the 401."""
+        try:
+            return await super()._try_transparent_refresh(upstream_token_set)
+        except Exception as exc:
+            logger.warning("Transparent upstream refresh failed: %s", describe_failure(upstream_token_set, exc))
+            raise
+
+    async def _stored_token_set(self, upstream_token_id: str | None) -> UpstreamTokenSet | None:
+        """Stored upstream token set, or ``None`` on any miss; never raises."""
+        if upstream_token_id is None:
+            return None
+        try:
+            return await self._upstream_token_store.get(key=upstream_token_id)
+        except Exception:
+            return None
+
+    def _sealed_upstream_claims(self, token: str, token_use: str) -> dict[str, Any] | None:
+        """``upstream_claims`` sealed in an issued FastMCP token, or ``None``; never raises."""
+        claims = (self._verified_payload(token, token_use) or {}).get(UPSTREAM_CLAIMS_KEY)
+        return claims if isinstance(claims, dict) else None
+
+    async def _log_rejected_session(self, token: str) -> None:
+        """Warn when a still-valid FastMCP token 401s because its upstream session failed.
+
+        An expired or forged FastMCP token is routine (the client refreshes) and
+        stays at DEBUG. A token that verifies points at the upstream side, including
+        a session whose stored state is gone (a Valkey flush logs every user here).
+        """
+        payload = self._verified_payload(token, "access")
+        if payload is None:
+            logger.debug("load_access_token: upstream validation returned None (token invalid/expired)")
+            return
+        token_set = await self._stored_token_set(await self._upstream_token_id_for(payload))
+        logger.warning("Upstream token validation failed, returning 401: %s", _describe_rejected(token_set, payload))
 
     async def _extract_upstream_claims(self, idp_tokens: dict[str, Any]) -> dict[str, Any] | None:
         id_token = idp_tokens.get(ID_TOKEN_KEY)
@@ -338,7 +389,7 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         """
         validated = await super().load_access_token(token)
         if validated is None:
-            logger.debug("load_access_token: upstream validation returned None (token invalid/expired)")
+            await self._log_rejected_session(token)
             return None
 
         upstream = await self._resolve_upstream_claims(token)
@@ -406,3 +457,19 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         except Exception as exc:
             logger.warning("Cognito: failed to resolve upstream id_token: %s", exc)
             return None
+
+
+def _flag(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _describe_rejected(token_set: UpstreamTokenSet | None, payload: dict[str, Any]) -> str:
+    if token_set is not None:
+        return describe_session(token_set)
+    sealed_claims = payload.get(UPSTREAM_CLAIMS_KEY)
+    session = session_fields(
+        None,
+        client_id=payload.get("client_id"),
+        sealed_claims=sealed_claims if isinstance(sealed_claims, dict) else None,
+    )
+    return render({**session, "refresh_token": None})
