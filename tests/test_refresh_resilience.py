@@ -21,6 +21,7 @@ import httpx
 import jwt
 import pytest
 from authlib.integrations.httpx_client import AsyncOAuth2Client
+from fastmcp.server.auth.jwt_issuer import JWTIssuer
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
 from fastmcp.server.auth.oauth_proxy.models import JTIMapping, RefreshTokenMetadata, UpstreamTokenSet, _hash_token
 from fastmcp.server.auth.oidc_proxy import OIDCConfiguration, OIDCProxy
@@ -37,6 +38,8 @@ CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
 UPSTREAM_TOKEN_ID = "upstream-session"
 UPSTREAM_TOKEN_URL = "https://auth.example.test/oauth2/token"
 _SIGNING_KEY = "k" * 32
+SCENARIO_TIMEOUT_SECONDS = 10
+BROWSER_ORIGIN = "https://inspector.example.test"
 
 _COGNITO_ENV = {
     "MCP_BASE_URL": "https://pm-mcp.example.test",
@@ -145,9 +148,10 @@ class Session:
         self.client_id = client_id
         self.refresh_token = refresh_token
 
-    async def refresh(self, refresh_token: str | None = None) -> httpx.Response:
+    async def refresh(self, refresh_token: str | None = None, headers: dict | None = None) -> httpx.Response:
         return await self.http.post(
             "/token",
+            headers=headers,
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token or self.refresh_token,
@@ -157,6 +161,13 @@ class Session:
 
     async def stored_upstream(self) -> UpstreamTokenSet:
         return await self.provider._upstream_token_store.get(key=UPSTREAM_TOKEN_ID)
+
+
+class RejectingVerifier:
+    """Stands in for Cognito JWKS validation, which would otherwise fetch keys over the network."""
+
+    async def verify_token(self, token: str) -> None:
+        return None
 
 
 def _run(scenario) -> None:
@@ -176,8 +187,11 @@ def _run(scenario) -> None:
             )
             assert registered.status_code == 201, registered.text
             client_id = registered.json()["client_id"]
+            mcp.auth._token_validator = RejectingVerifier()
             refresh_token = await _seed_session(mcp.auth, client_id)
-            await scenario(Session(http, mcp.auth, client_id, refresh_token))
+            await asyncio.wait_for(
+                scenario(Session(http, mcp.auth, client_id, refresh_token)), timeout=SCENARIO_TIMEOUT_SECONDS
+            )
 
     asyncio.run(_main())
 
@@ -235,12 +249,13 @@ def test_a_transient_upstream_failure_is_retryable_and_leaves_the_session_intact
     async def scenario(session: Session):
         before = await session.stored_upstream()
 
-        failed = await session.refresh()
+        failed = await session.refresh(headers={"Origin": BROWSER_ORIGIN})
 
         assert failed.status_code == 503
         assert failed.json()["error"] == "temporarily_unavailable"
         assert failed.headers["retry-after"]
         assert failed.headers["cache-control"] == "no-store"
+        assert failed.headers["access-control-allow-origin"] == "*"
         assert await session.stored_upstream() == before
 
         retried = await session.refresh()
@@ -279,35 +294,92 @@ def _refresh_token(client_id: str = "client") -> RefreshToken:
     return RefreshToken(token="rt", client_id=client_id, scopes=["openid"], expires_at=None)
 
 
-def _tokens() -> OAuthToken:
-    return OAuthToken(access_token="at", token_type="Bearer", expires_in=3600, refresh_token="new-rt")
+def _tokens(refresh_token: str = "new-rt", expires_in: int = 3600) -> OAuthToken:
+    return OAuthToken(access_token="at", token_type="Bearer", expires_in=expires_in, refresh_token=refresh_token)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 def test_recent_refreshes_forgets_a_replay_after_the_window():
-    now = [0.0]
-    recent = RecentRefreshes(window_seconds=60, clock=lambda: now[0])
+    clock = FakeClock()
+    recent = RecentRefreshes(window_seconds=10, clock=clock)
     recent.record(_refresh_token(), _tokens())
 
-    now[0] = 59
-    assert recent.lookup("rt", "client") is not None
-    now[0] = 61
-    assert recent.lookup("rt", "client") is None
+    clock.now = 9
+    assert recent.tokens("rt", "client") is not None
+    clock.now = 11
+    assert recent.tokens("rt", "client") is None
+
+
+def test_recent_refreshes_purges_expired_entries_on_the_next_record():
+    clock = FakeClock()
+    recent = RecentRefreshes(window_seconds=10, clock=clock)
+    recent.record(_refresh_token(), _tokens())
+
+    clock.now = 11
+    recent.record(RefreshToken(token="rt-2", client_id="client", scopes=[], expires_at=None), _tokens("newer"))
+
+    assert len(recent) == 1
+
+
+def test_recent_refreshes_keeps_only_a_hash_of_the_presented_token():
+    recent = RecentRefreshes()
+    presented = "presented-refresh-token-secret"
+    recent.record(RefreshToken(token=presented, client_id="client", scopes=[], expires_at=None), _tokens())
+
+    assert presented not in repr(recent._replays)
+    assert recent.refresh_token(presented, "client").token == presented
 
 
 def test_recent_refreshes_never_replays_to_another_client():
     recent = RecentRefreshes()
     recent.record(_refresh_token("client"), _tokens())
 
-    assert recent.lookup("rt", "other-client") is None
+    assert recent.tokens("rt", "other-client") is None
+    assert recent.refresh_token("rt", "other-client") is None
+
+
+def test_recent_refreshes_rebuilds_the_presented_refresh_token():
+    recent = RecentRefreshes()
+    recent.record(RefreshToken(token="rt", client_id="client", scopes=["openid"], expires_at=99), _tokens())
+
+    assert recent.refresh_token("rt", "client") == RefreshToken(
+        token="rt", client_id="client", scopes=["openid"], expires_at=99
+    )
+
+
+def test_recent_refreshes_ages_the_replayed_lifetime():
+    clock = FakeClock()
+    recent = RecentRefreshes(window_seconds=10, clock=clock)
+    recent.record(_refresh_token(), _tokens(expires_in=5))
+
+    clock.now = 3
+    assert recent.tokens("rt", "client").expires_in == 2
+    clock.now = 9
+    assert recent.tokens("rt", "client").expires_in == 1
+
+
+def test_recent_refreshes_follows_the_rotation_chain_to_the_newest_tokens():
+    recent = RecentRefreshes()
+    recent.record(_refresh_token(), _tokens("rt-2"))
+    recent.record(RefreshToken(token="rt-2", client_id="client", scopes=[], expires_at=None), _tokens("rt-3"))
+
+    assert recent.tokens("rt", "client").refresh_token == "rt-3"
 
 
 def test_recent_refreshes_stays_within_capacity():
     recent = RecentRefreshes(capacity=1)
     recent.record(_refresh_token(), _tokens())
-    recent.record(RefreshToken(token="rt-2", client_id="client", scopes=[], expires_at=None), _tokens())
+    recent.record(RefreshToken(token="rt-2", client_id="client", scopes=[], expires_at=None), _tokens("other"))
 
-    assert recent.lookup("rt", "client") is None
-    assert recent.lookup("rt-2", "client") is not None
+    assert recent.tokens("rt", "client") is None
+    assert recent.tokens("rt-2", "client") is not None
 
 
 @pytest.mark.parametrize(
@@ -339,7 +411,11 @@ def test_fastmcp_refresh_contract_still_matches_the_override():
     ]
     assert list(inspect.signature(OAuthProxy.load_refresh_token).parameters) == ["self", "client", "refresh_token"]
     assert list(inspect.signature(OAuthProxy._try_transparent_refresh).parameters) == ["self", "upstream_token_set"]
-    assert callable(OAuthProxy._get_refresh_lock)
+    assert list(inspect.signature(OAuthProxy._get_refresh_lock).parameters) == ["self", "token_id"]
+    assert "expected_token_use" in inspect.signature(JWTIssuer.verify_token).parameters
+    assert "_get_refresh_lock" not in inspect.getsource(OAuthProxy.exchange_refresh_token), (
+        "fastmcp now locks inside exchange_refresh_token; the override's anyio.Lock is not reentrant and would deadlock"
+    )
     assert "temporarily_unavailable" not in get_args(TokenErrorCode)
     assert 'raise TokenError("invalid_grant", f"Upstream refresh failed: {e}") from e' in inspect.getsource(
         OAuthProxy.exchange_refresh_token
@@ -389,12 +465,12 @@ def test_a_transient_refresh_failure_names_the_user_client_and_session_age(upstr
 
     async def scenario(session: Session):
         await session.refresh()
-        [line] = _lines(warnings_log, "Upstream token refresh failed: ")
+        [line] = _lines(warnings_log, f"{cognito.SESSION_REFRESH_CLIENT}: ")
         fields = _fields(line)
 
         assert fields["sub"] == "user-sub"
-        assert fields["email"] == "user@example.test"
         assert fields["username"] == "mpass-1"
+        assert "email" not in fields
         assert fields["client_id"] == session.client_id
         assert fields["session_age"].startswith("0d01h00m")
         assert fields["upstream_token"] == _fingerprint()
@@ -412,7 +488,7 @@ def test_an_upstream_rejection_is_logged_as_not_retryable_with_the_oauth_error(u
 
     async def scenario(session: Session):
         await session.refresh()
-        [line] = _lines(warnings_log, "Upstream token refresh failed: ")
+        [line] = _lines(warnings_log, f"{cognito.SESSION_REFRESH_CLIENT}: ")
         fields = _fields(line)
 
         assert fields["oauth_error"] == "invalid_grant"
@@ -438,7 +514,7 @@ def test_a_refresh_without_a_session_names_the_user_from_the_sealed_claims(upstr
         with pytest.raises(TokenError):
             await session.provider.exchange_refresh_token(client, refresh_token, ["openid"])
 
-        [line] = _lines(warnings_log, "Upstream token refresh failed: ")
+        [line] = _lines(warnings_log, f"{cognito.SESSION_REFRESH_CLIENT}: ")
         fields = _fields(line)
         assert fields["username"] == "mpass-1"
         assert fields["client_id"] == session.client_id
@@ -449,18 +525,38 @@ def test_a_refresh_without_a_session_names_the_user_from_the_sealed_claims(upstr
     _run(scenario)
 
 
+def test_an_unknown_refresh_token_names_the_user(upstream, warnings_log):
+    async def scenario(session: Session):
+        unknown = session.provider.jwt_issuer.issue_refresh_token(
+            client_id=session.client_id,
+            scopes=["openid"],
+            jti="unknown-refresh-jti",
+            expires_in=3600,
+            upstream_claims={"id_token": _cognito_tokens()["id_token"]},
+        )
+
+        rejected = await session.refresh(unknown)
+
+        assert rejected.status_code == 401
+        [line] = _lines(warnings_log, f"{cognito.SESSION_REFRESH_TOKEN_UNKNOWN}: ")
+        assert _fields(line)["username"] == "mpass-1"
+        assert _fields(line)["client_id"] == session.client_id
+
+    _run(scenario)
+
+
 def test_a_failed_transparent_refresh_and_its_401_are_warnings_with_identity(upstream, warnings_log):
     upstream.outcomes.append(httpx.ReadTimeout("upstream timed out"))
 
     async def scenario(session: Session):
         assert await session.provider.load_access_token(await _seed_access_token(session)) is None
 
-        [refresh_line] = _lines(warnings_log, "Transparent upstream refresh failed: ")
-        [rejected_line] = _lines(warnings_log, "Upstream token validation failed, returning 401: ")
+        [refresh_line] = _lines(warnings_log, f"{cognito.SESSION_REFRESH_BACKGROUND}: ")
+        [rejected_line] = _lines(warnings_log, f"{cognito.SESSION_REJECTED}: ")
         assert _fields(refresh_line)["error"] == "ReadTimeout"
         assert _fields(refresh_line)["upstream_token"] == _fingerprint()
         assert _fields(rejected_line)["client_id"] == session.client_id
-        assert _fields(rejected_line)["email"] == "user@example.test"
+        assert _fields(rejected_line)["username"] == "mpass-1"
         assert _fields(rejected_line)["refresh_token"] == "present"
 
     _run(scenario)
@@ -474,12 +570,32 @@ def test_a_valid_token_whose_session_is_gone_still_names_the_user(upstream, warn
 
         assert await session.provider.load_access_token(access_token) is None
 
-        [line] = _lines(warnings_log, "Upstream token validation failed, returning 401: ")
+        [line] = _lines(warnings_log, f"{cognito.SESSION_REJECTED}: ")
         fields = _fields(line)
         assert fields["client_id"] == session.client_id
         assert fields["username"] == "mpass-1"
-        assert fields["email"] == "user@example.test"
         assert fields["upstream_token"] == "-"
+        assert fields["session_lookup"] == "missing"
+
+    _run(scenario)
+
+
+def test_a_slow_session_lookup_is_bounded(upstream, warnings_log, monkeypatch):
+    monkeypatch.setattr(cognito, "SESSION_LOOKUP_TIMEOUT_SECONDS", 0.01)
+
+    async def stalled(*_args):
+        await asyncio.sleep(1)
+
+    async def scenario(session: Session):
+        access_token = await _seed_access_token(session)
+        monkeypatch.setattr(session.provider, "_stored_session", stalled)
+        upstream.outcomes.append(httpx.Response(400, json={"error": "invalid_grant"}))
+
+        assert await session.provider.load_access_token(access_token) is None
+
+        [line] = _lines(warnings_log, f"{cognito.SESSION_REJECTED}: ")
+        assert _fields(line)["session_lookup"] == "timeout"
+        assert _fields(line)["username"] == "mpass-1"
 
     _run(scenario)
 
@@ -487,20 +603,64 @@ def test_a_valid_token_whose_session_is_gone_still_names_the_user(upstream, warn
 def test_an_invalid_fastmcp_token_stays_out_of_the_warnings(upstream, warnings_log):
     async def scenario(session: Session):
         assert await session.provider.load_access_token("not-a-token") is None
-        assert not _lines(warnings_log, "Upstream token validation failed")
+        assert not _lines(warnings_log, cognito.SESSION_REJECTED)
 
     _run(scenario)
 
 
-def test_session_failure_lines_never_carry_a_token(upstream, warnings_log):
+def _raise(*_args, **_kwargs):
+    raise RuntimeError("formatter broke")
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "error"),
+    [
+        (httpx.Response(502, text="Bad Gateway"), 503, "temporarily_unavailable"),
+        (httpx.Response(400, json={"error": "invalid_grant"}), 401, "invalid_grant"),
+    ],
+    ids=["transient", "rejected"],
+)
+def test_a_broken_formatter_never_changes_the_refresh_answer(
+    upstream, warnings_log, monkeypatch, failure, status, error
+):
+    monkeypatch.setattr(session_log, "describe_failure", _raise)
+    upstream.outcomes.append(failure)
+
+    async def scenario(session: Session):
+        answered = await session.refresh()
+
+        assert answered.status_code == status
+        assert answered.json()["error"] == error
+        [line] = _lines(warnings_log, f"{cognito.SESSION_REFRESH_CLIENT}: ")
+        assert _fields(line)["context_error"] == "RuntimeError"
+
+    _run(scenario)
+
+
+def test_a_broken_formatter_never_changes_a_rejected_request(upstream, warnings_log, monkeypatch):
+    monkeypatch.setattr(session_log, "describe_failure", _raise)
+    monkeypatch.setattr(session_log, "describe_session", _raise)
+    upstream.outcomes.append(httpx.ReadTimeout("upstream timed out"))
+
+    async def scenario(session: Session):
+        assert await session.provider.load_access_token(await _seed_access_token(session)) is None
+        assert len(_lines(warnings_log, "MCP session")) == 2
+
+    _run(scenario)
+
+
+def test_session_failure_lines_never_carry_a_token_or_an_email(upstream, warnings_log):
     upstream.outcomes.append(httpx.Response(502, text="Bad Gateway"))
 
     async def scenario(session: Session):
         stored = await session.stored_upstream()
         await session.refresh()
+        await session.provider.load_access_token(await _seed_access_token(session))
 
         for secret in (session.refresh_token, stored.refresh_token, stored.access_token, UPSTREAM_TOKEN_ID):
             assert secret not in warnings_log.text
+        assert warnings_log.records
+        assert not [r for r in warnings_log.records if "@" in r.getMessage()]
 
     _run(scenario)
 
