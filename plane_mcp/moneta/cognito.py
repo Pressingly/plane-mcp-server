@@ -33,8 +33,9 @@ The inbound access token is still independently JWKS-verified on every request b
 the stock verifier, so this adds no auth-bypass surface — it only enriches the
 identity forwarded downstream.
 
-This module imports only ``fastmcp`` / ``jwt`` (no ``plane_mcp`` modules) so it
-stays import-cycle-free as the leaf other fork modules build on.
+This module imports no ``plane_mcp`` module other than the leaf
+:mod:`plane_mcp.moneta.refresh`, so it stays import-cycle-free as the module
+other fork modules build on.
 """
 
 from __future__ import annotations
@@ -48,6 +49,17 @@ from authlib.integrations.httpx_client import AsyncOAuth2Client
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.providers.aws import AWSCognitoProvider
 from fastmcp.utilities.logging import get_logger
+from mcp.server.auth.provider import RefreshToken, TokenError
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from starlette.routing import BaseRoute
+
+from plane_mcp.moneta.refresh import (
+    RecentRefreshes,
+    UpstreamRefreshUnavailable,
+    is_transient_upstream_failure,
+    raise_for_throttling,
+    with_retryable_token_endpoint,
+)
 
 logger = get_logger(__name__)
 
@@ -157,7 +169,7 @@ def _correct_expires_in(response: httpx.Response) -> httpx.Response:
 class PlaneCognitoProvider(AWSCognitoProvider):
     """``AWSCognitoProvider`` that forwards the upstream id_token's identity.
 
-    Three overrides cooperate:
+    Overrides that cooperate:
 
     * :meth:`_create_upstream_oauth_client` corrects the upstream ``expires_in``
       so the session renews instead of forcing an hourly re-authorization
@@ -173,7 +185,14 @@ class PlaneCognitoProvider(AWSCognitoProvider):
       missing keeps :func:`plane_mcp.moneta.client.bearer_for` from falling back
       to the access token (no ``email``; opaque UUID ``sub`` for federated users),
       which would provision the wrong Plane account.
+    * :meth:`exchange_refresh_token`, :meth:`load_refresh_token` and
+      :meth:`get_routes` keep a client's refresh grant alive through overlapping
+      refreshes and transient upstream failures (see :mod:`plane_mcp.moneta.refresh`).
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._recent_refreshes = RecentRefreshes()
 
     def _create_upstream_oauth_client(self) -> AsyncOAuth2Client:
         """Attach the ``expires_in`` correction to every upstream token call.
@@ -186,7 +205,89 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         client = super()._create_upstream_oauth_client()
         client.register_compliance_hook("access_token_response", _correct_expires_in)
         client.register_compliance_hook("refresh_token_response", _correct_expires_in)
+        client.register_compliance_hook("refresh_token_response", raise_for_throttling)
         return client
+
+    def get_routes(self, mcp_path: str | None = None) -> list[BaseRoute]:
+        return with_retryable_token_endpoint(super().get_routes(mcp_path))
+
+    async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> RefreshToken | None:
+        """Accept a refresh token rotated moments ago by an overlapping request.
+
+        The SDK token handler loads the refresh token before exchanging it, so
+        without this a duplicate arriving after its sibling finished is rejected
+        with ``invalid_grant`` before :meth:`exchange_refresh_token` can replay.
+        """
+        replay = self._recent_refreshes.lookup(refresh_token, client.client_id)
+        if replay is not None:
+            return replay.refresh_token
+        return await super().load_refresh_token(client, refresh_token)
+
+    async def exchange_refresh_token(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: RefreshToken,
+        scopes: list[str],
+    ) -> OAuthToken:
+        """Refresh once per upstream session, answering overlapping duplicates alike.
+
+        Serialised on the per-upstream-token lock FastMCP's transparent refresh
+        already uses. A request that queued behind a sibling presenting the same
+        refresh token gets that sibling's tokens: the stored refresh token was
+        rotated away, so a second exchange could only fail.
+        """
+        replayed = self._replayed_tokens(refresh_token, client)
+        if replayed is not None:
+            return replayed
+        upstream_token_id = await self._upstream_token_id_of(refresh_token.token)
+        if upstream_token_id is None:
+            return await self._exchange_with_upstream(client, refresh_token, scopes)
+        async with self._get_refresh_lock(upstream_token_id):
+            replayed = self._replayed_tokens(refresh_token, client)
+            if replayed is not None:
+                return replayed
+            tokens = await self._exchange_with_upstream(client, refresh_token, scopes)
+            self._recent_refreshes.record(refresh_token, tokens)
+            return tokens
+
+    def _replayed_tokens(self, refresh_token: RefreshToken, client: OAuthClientInformationFull) -> OAuthToken | None:
+        replay = self._recent_refreshes.lookup(refresh_token.token, client.client_id)
+        if replay is None:
+            return None
+        logger.info("Replayed tokens for a refresh token rotated moments ago (client=%s)", client.client_id)
+        return replay.tokens
+
+    async def _upstream_token_id_of(self, refresh_token: str) -> str | None:
+        try:
+            payload = self.jwt_issuer.verify_token(refresh_token, expected_token_use="refresh")
+        except Exception:
+            return None
+        mapping = await self._jti_mapping_store.get(key=payload["jti"])
+        return mapping.upstream_token_id if mapping else None
+
+    async def _exchange_with_upstream(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: RefreshToken,
+        scopes: list[str],
+    ) -> OAuthToken:
+        """Run FastMCP's exchange, keeping a flaky upstream from voiding the grant.
+
+        The base method raises ``invalid_grant`` for every upstream exception and
+        writes nothing before the upstream call, so a transient failure leaves the
+        client's refresh token valid for a retry.
+        """
+        try:
+            return await super().exchange_refresh_token(client, refresh_token, scopes)
+        except TokenError as rejected:
+            if not is_transient_upstream_failure(rejected.__cause__):
+                raise
+            logger.warning(
+                "Upstream refresh failed transiently; answering temporarily_unavailable (client=%s): %s",
+                client.client_id,
+                rejected.__cause__,
+            )
+            raise UpstreamRefreshUnavailable("Upstream token endpoint unavailable; retry shortly") from rejected
 
     async def _extract_upstream_claims(self, idp_tokens: dict[str, Any]) -> dict[str, Any] | None:
         id_token = idp_tokens.get(ID_TOKEN_KEY)

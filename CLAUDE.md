@@ -196,6 +196,7 @@ the curated one.
 | Module | Responsibility |
 |---|---|
 | `cognito.py` | `PlaneCognitoProvider(AWSCognitoProvider)` — captures the Cognito **id_token** and stashes `{id_token, email, cognito:username}` under the issued JWT's `upstream_claims`. |
+| `refresh.py` | Client refresh hardening the Cognito provider composes: overlapping refreshes of one refresh token are serialised on FastMCP's per-upstream-token lock and answered with the same tokens (60s in-process replay), and a transient upstream failure (transport error, 5xx, 429) answers `503 temporarily_unavailable` with `Retry-After` instead of `invalid_grant`, leaving the session intact for a retry. |
 | `client.py` | `bearer_for(token, claims)` (forwards the id_token), `plane_request_auth()` (base_url + headers for raw **app-API** calls). |
 | `apitoken.py` | Mints/caches a Plane `APIToken` and builds the dual-header `PlaneClient` (see "The `/api/v1` 401 fix"). |
 | `selfhosted.py` | `SelfHostedPlaneClient` — normalises the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) and serves plane-sdk 0.3's Cloud-only routes from the self-hosted ones: `*-lite` lists → `projects/`, `cycles/`, `modules/`, `members/` (name and email filters applied here); `dependencies/` → `relations/`; custom relations → none; the workspace-wide work-item list and the workspace state catalogue → an error naming `project_id`. |
