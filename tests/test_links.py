@@ -27,6 +27,8 @@ UNSAFE_URLS = [
     "https://",
     "https://example.com/a b",
     "https://example.com/\nnext",
+    "https://[::1",
+    "https://[evil]/x",
 ]
 
 WEB_URLS = ["https://example.com", "http://example.com/spec?x=1#y", "HTTPS://Example.com/Path"]

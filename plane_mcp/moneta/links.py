@@ -33,7 +33,10 @@ def is_web_url(url: str) -> bool:
     """True for an ``http(s)://host...`` URL with no whitespace or control characters."""
     if _CONTROL_OR_SPACE.search(url):
         return False
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
     return parts.scheme.lower() in WEB_SCHEMES and bool(parts.netloc)
 
 
