@@ -22,7 +22,7 @@ from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.utilities.logging import get_logger
 
-from plane_mcp.moneta.cognito import EMAIL_CLAIM, ID_TOKEN_KEY, UPSTREAM_CLAIMS_KEY
+from plane_mcp.moneta.cognito import COGNITO_USERNAME_CLAIM, ID_TOKEN_KEY, UPSTREAM_CLAIMS_KEY
 
 logger = get_logger(__name__)
 
@@ -40,9 +40,9 @@ def bearer_for(token: str, claims: dict[str, Any] | None) -> str:
         id_token = upstream.get(ID_TOKEN_KEY)
         if isinstance(id_token, str) and id_token:
             logger.debug(
-                "bearer_for: forwarding upstream Cognito id_token (len=%d email=%s)",
+                "bearer_for: forwarding upstream Cognito id_token (len=%d cognito:username=%s)",
                 len(id_token),
-                upstream.get(EMAIL_CLAIM),
+                upstream.get(COGNITO_USERNAME_CLAIM),
             )
             return id_token
     logger.debug("bearer_for: no upstream id_token in claims — forwarding the validated token (Plane-OAuth/PAT path)")
