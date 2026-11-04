@@ -7,7 +7,7 @@ after upstream has registered its resource tools. Keeping the fork out of
 catalogue they were written for.
 
 Order matters: ``disable_pql``, ``restore_relation_types``, ``apply_self_hosted_trims``,
-``add_workspace_arg`` and ``annotate_tools`` each remove and re-add the tools they
+``guard_link_urls``, ``add_workspace_arg`` and ``annotate_tools`` each remove and re-add the tools they
 transform, which would discard a visibility filter applied earlier, so
 ``apply_tool_visibility`` runs last.
 """
@@ -21,6 +21,7 @@ from plane_mcp.moneta.annotations import annotate_tools
 from plane_mcp.moneta.compaction import CompactResponses
 from plane_mcp.moneta.inject import add_workspace_arg
 from plane_mcp.moneta.instructions import MONETA_INSTRUCTIONS
+from plane_mcp.moneta.links import guard_link_urls
 from plane_mcp.moneta.listing import AdvertisedArguments
 from plane_mcp.moneta.pql_guard import disable_pql
 from plane_mcp.moneta.relations import restore_relation_types
@@ -35,6 +36,7 @@ def apply_moneta_surface(mcp: FastMCP) -> FastMCP:
     disable_pql(mcp)
     restore_relation_types(mcp)
     apply_self_hosted_trims(mcp)
+    guard_link_urls(mcp)
     add_workspace_arg(mcp)
     annotate_tools(mcp)
     apply_tool_visibility(mcp)

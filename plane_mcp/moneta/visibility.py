@@ -65,7 +65,8 @@ ENABLED_ACTIONS: Mapping[str, frozenset[str]] = {
     ),
     # update/delete exposed so the agent can correct or retract a comment it wrote itself.
     "workitem_comment": frozenset({"list", "retrieve", "create", "update", "delete"}),
-    # update/delete exposed so the agent can correct or remove a link it attached itself.
+    # update/delete exposed so the agent can fix or remove links; Plane lets any project member
+    # edit any link, the same boundary as comments. moneta.links refuses non-http(s) URLs.
     "workitem_link": frozenset({"list", "retrieve", "create", "update", "delete"}),
     # No delete: the self-hosted API has no route that removes a relation.
     "workitem_relation": frozenset({"list", "create"}),
