@@ -73,6 +73,14 @@ async def test_each_resource_advertises_only_its_curated_actions(server: FastMCP
 
 
 @pytest.mark.anyio
+async def test_workitem_link_advertises_link_writes(server: FastMCP) -> None:
+    """Agents attach a URL to a ticket's Links section, and fix or remove one they added."""
+    schema = (await listed_tools(server))["workitem_link"].inputSchema["properties"]
+    assert {"create", "update", "delete"} <= set(schema["action"]["enum"])
+    assert {"url", "title", "link_id"} <= set(schema)
+
+
+@pytest.mark.anyio
 async def test_hidden_resource_call_is_rejected(server: FastMCP) -> None:
     async with Client(server) as client:
         with pytest.raises(ToolError, match="Unknown tool"):
