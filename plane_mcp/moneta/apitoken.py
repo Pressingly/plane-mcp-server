@@ -50,6 +50,7 @@ from plane_mcp.moneta.cognito import (
     UPSTREAM_CLAIMS_KEY,
 )
 from plane_mcp.moneta.selfhosted import SelfHostedPlaneClient
+from plane_mcp.moneta.session_log import fingerprint
 
 logger = get_logger(__name__)
 
@@ -235,12 +236,12 @@ def plane_api_key(claims: dict[str, Any] | None) -> str | None:
         return None
     cached = _cache_get(identity)
     if cached:
-        logger.debug("plane_api_key: cache hit for identity=%s", identity)
+        logger.debug("plane_api_key: cache hit for identity=%s", fingerprint(identity))
         return cached
     token = _mint()
     if token:
         _cache_set(identity, token)
-        logger.debug("plane_api_key: minted + cached Plane API token for identity=%s", identity)
+        logger.debug("plane_api_key: minted + cached Plane API token for identity=%s", fingerprint(identity))
     return token
 
 
@@ -260,13 +261,13 @@ def refresh_api_key(identity: str, stale: str) -> str | None:
     """
     current = _cache_get(identity)
     if current and current != stale:
-        logger.debug("refresh_api_key: another request already re-minted for identity=%s", identity)
+        logger.debug("refresh_api_key: another request already re-minted for identity=%s", fingerprint(identity))
         return current
     _cache_delete(identity)
     token = _mint()
     if token:
         _cache_set(identity, token)
-        logger.info("refresh_api_key: re-minted Plane API token for identity=%s", identity)
+        logger.info("refresh_api_key: re-minted Plane API token for identity=%s", fingerprint(identity))
     return token
 
 

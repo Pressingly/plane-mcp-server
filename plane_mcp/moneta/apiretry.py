@@ -64,6 +64,8 @@ from fastmcp.utilities.logging import get_logger
 from plane.api.base_resource import BaseResource
 from plane.errors.errors import HttpError
 
+from plane_mcp.moneta.session_log import fingerprint
+
 logger = get_logger(__name__)
 
 _WRAPPED_MARKER = "_moneta_apiretry_wrapped"
@@ -123,10 +125,12 @@ def _retry_once(method: Callable[..., Any]) -> Callable[..., Any]:
             # returns a new token) and kept only as a backstop. The real classification
             # is _is_token_rejection above; do not mistake this for it.
             if not fresh or fresh == stale:
-                logger.debug("api-token retry: no replacement key for identity=%s, surfacing the 403", identity)
+                logger.debug(
+                    "api-token retry: no replacement key for identity=%s, surfacing the 403", fingerprint(identity)
+                )
                 raise
             self.config.api_key = fresh
-            logger.info("api-token retry: re-minted for identity=%s, retrying the request once", identity)
+            logger.info("api-token retry: re-minted for identity=%s, retrying the request once", fingerprint(identity))
             return method(self, *args, **kwargs)
 
     setattr(wrapper, _WRAPPED_MARKER, True)

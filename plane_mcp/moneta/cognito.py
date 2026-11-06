@@ -33,21 +33,38 @@ The inbound access token is still independently JWKS-verified on every request b
 the stock verifier, so this adds no auth-bypass surface — it only enriches the
 identity forwarded downstream.
 
-This module imports only ``fastmcp`` / ``jwt`` (no ``plane_mcp`` modules) so it
-stays import-cycle-free as the leaf other fork modules build on.
+This module imports no ``plane_mcp`` module other than the leaves
+:mod:`plane_mcp.moneta.refresh` and :mod:`plane_mcp.moneta.session_log`, so it
+stays import-cycle-free as the module other fork modules build on.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 
 import httpx
 import jwt
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from fastmcp.server.auth.auth import AccessToken
+from fastmcp.server.auth.oauth_proxy.models import UpstreamTokenSet
 from fastmcp.server.auth.providers.aws import AWSCognitoProvider
 from fastmcp.utilities.logging import get_logger
+from mcp.server.auth.provider import RefreshToken, TokenError
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from starlette.routing import BaseRoute
+
+from plane_mcp.moneta import session_log
+from plane_mcp.moneta.refresh import (
+    RecentRefreshes,
+    UpstreamRefreshUnavailable,
+    is_transient_upstream_failure,
+    raise_for_throttling,
+    with_retryable_token_endpoint,
+)
 
 logger = get_logger(__name__)
 
@@ -66,6 +83,17 @@ COGNITO_USERNAME_CLAIM = "cognito:username"
 # token that arrives already expired, transparent refresh stays gated while JWKS
 # validation already fails — after which the refresh grant recovers the session.
 MIN_EXPIRES_IN_SECONDS = 60
+
+# One shared prefix so `grep 'MCP session'` finds every line we add, and none of
+# FastMCP's own identity-less refresh errors. Same lines as outline-mcp.
+SESSION_REFRESH_CLIENT = "MCP session refresh failed (client)"
+SESSION_REFRESH_BACKGROUND = "MCP session refresh failed (background)"
+SESSION_REJECTED = "MCP session rejected (401)"
+SESSION_REFRESH_TOKEN_UNKNOWN = "MCP session refresh token unknown"
+
+# Bounds the extra storage read made only to describe a failure, so a Valkey
+# outage does not double the stall of a request that is already failing.
+SESSION_LOOKUP_TIMEOUT_SECONDS = 1
 
 # `_true_expires_in` truncates fractional seconds, so a lifetime the upstream
 # already reported honestly comes back one second short. Treat that as a match
@@ -157,7 +185,7 @@ def _correct_expires_in(response: httpx.Response) -> httpx.Response:
 class PlaneCognitoProvider(AWSCognitoProvider):
     """``AWSCognitoProvider`` that forwards the upstream id_token's identity.
 
-    Three overrides cooperate:
+    Overrides that cooperate:
 
     * :meth:`_create_upstream_oauth_client` corrects the upstream ``expires_in``
       so the session renews instead of forcing an hourly re-authorization
@@ -173,7 +201,14 @@ class PlaneCognitoProvider(AWSCognitoProvider):
       missing keeps :func:`plane_mcp.moneta.client.bearer_for` from falling back
       to the access token (no ``email``; opaque UUID ``sub`` for federated users),
       which would provision the wrong Plane account.
+    * :meth:`exchange_refresh_token`, :meth:`load_refresh_token` and
+      :meth:`get_routes` keep a client's refresh grant alive through overlapping
+      refreshes and transient upstream failures (see :mod:`plane_mcp.moneta.refresh`).
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._recent_refreshes = RecentRefreshes()
 
     def _create_upstream_oauth_client(self) -> AsyncOAuth2Client:
         """Attach the ``expires_in`` correction to every upstream token call.
@@ -186,7 +221,168 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         client = super()._create_upstream_oauth_client()
         client.register_compliance_hook("access_token_response", _correct_expires_in)
         client.register_compliance_hook("refresh_token_response", _correct_expires_in)
+        client.register_compliance_hook("refresh_token_response", raise_for_throttling)
         return client
+
+    def get_routes(self, mcp_path: str | None = None) -> list[BaseRoute]:
+        return with_retryable_token_endpoint(super().get_routes(mcp_path))
+
+    async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> RefreshToken | None:
+        """Accept a refresh token rotated moments ago by an overlapping request.
+
+        The SDK token handler loads the refresh token before exchanging it, so
+        without this a duplicate arriving after its sibling finished is rejected
+        with ``invalid_grant`` before :meth:`exchange_refresh_token` can replay.
+        """
+        replayed = self._recent_refreshes.refresh_token(refresh_token, client.client_id)
+        if replayed is not None:
+            return replayed
+        loaded = await super().load_refresh_token(client, refresh_token)
+        if loaded is None:
+            _warn_session(
+                SESSION_REFRESH_TOKEN_UNKNOWN,
+                lambda: session_log.describe_identity(
+                    self._sealed_upstream_claims(refresh_token, "refresh"), client_id=client.client_id
+                ),
+            )
+        return loaded
+
+    async def exchange_refresh_token(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: RefreshToken,
+        scopes: list[str],
+    ) -> OAuthToken:
+        """Refresh once per upstream session, answering overlapping duplicates alike.
+
+        Serialised on the per-upstream-token lock FastMCP's transparent refresh
+        already uses. A request that queued behind a sibling presenting the same
+        refresh token gets that sibling's tokens: the stored refresh token was
+        rotated away, so a second exchange could only fail.
+        """
+        replayed = self._replayed_tokens(refresh_token, client)
+        if replayed is not None:
+            return replayed
+        upstream_token_id = await self._upstream_token_id_of(refresh_token.token, "refresh")
+        if upstream_token_id is None:
+            return await self._exchange_with_upstream(client, refresh_token, scopes, upstream_token_id)
+        async with self._get_refresh_lock(upstream_token_id):
+            replayed = self._replayed_tokens(refresh_token, client)
+            if replayed is not None:
+                return replayed
+            tokens = await self._exchange_with_upstream(client, refresh_token, scopes, upstream_token_id)
+            self._recent_refreshes.record(refresh_token, tokens)
+            return tokens
+
+    def _replayed_tokens(self, refresh_token: RefreshToken, client: OAuthClientInformationFull) -> OAuthToken | None:
+        replayed = self._recent_refreshes.tokens(refresh_token.token, client.client_id)
+        if replayed is not None:
+            logger.info("Replayed tokens for a refresh token rotated moments ago (client=%s)", client.client_id)
+        return replayed
+
+    async def _upstream_token_id_of(self, token: str, token_use: str) -> str | None:
+        payload = self._verified_payload(token, token_use)
+        return await self._upstream_token_id_for(payload) if payload else None
+
+    def _verified_payload(self, token: str, token_use: str) -> dict[str, Any] | None:
+        try:
+            return self.jwt_issuer.verify_token(token, expected_token_use=token_use)
+        except Exception:
+            return None
+
+    async def _upstream_token_id_for(self, payload: dict[str, Any]) -> str | None:
+        try:
+            mapping = await self._jti_mapping_store.get(key=payload["jti"])
+        except Exception:
+            return None
+        return mapping.upstream_token_id if mapping else None
+
+    async def _exchange_with_upstream(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: RefreshToken,
+        scopes: list[str],
+        upstream_token_id: str | None,
+    ) -> OAuthToken:
+        """Run FastMCP's exchange, keeping a flaky upstream from voiding the grant.
+
+        The base method raises ``invalid_grant`` for every upstream exception and
+        writes nothing before the upstream call, so a transient failure leaves the
+        client's refresh token valid for a retry.
+        """
+        try:
+            return await super().exchange_refresh_token(client, refresh_token, scopes)
+        except Exception as exc:
+            transient = isinstance(exc, TokenError) and is_transient_upstream_failure(exc.__cause__)
+            await self._log_client_refresh_failure(client, refresh_token.token, upstream_token_id, exc, transient)
+            if not transient:
+                raise
+            raise UpstreamRefreshUnavailable("Upstream token endpoint unavailable; retry shortly") from exc
+
+    async def _try_transparent_refresh(self, upstream_token_set: UpstreamTokenSet) -> UpstreamTokenSet:
+        """Surface a failed in-request refresh; FastMCP logs it only at DEBUG before the 401."""
+        try:
+            return await super()._try_transparent_refresh(upstream_token_set)
+        except Exception as exc:
+            _warn_session(SESSION_REFRESH_BACKGROUND, partial(session_log.describe_failure, upstream_token_set, exc))
+            raise
+
+    async def _log_client_refresh_failure(
+        self,
+        client: OAuthClientInformationFull,
+        token: str,
+        upstream_token_id: str | None,
+        exc: Exception,
+        transient: bool,
+    ) -> None:
+        sealed_claims = self._sealed_upstream_claims(token, "refresh")
+        try:
+            token_set = await _bounded_lookup(self._stored_token_set(upstream_token_id))
+            lookup: dict[str, str] = {}
+        except asyncio.TimeoutError:
+            token_set, lookup = None, {"session_lookup": "timeout"}
+
+        def describe() -> str:
+            failure = session_log.describe_failure(
+                token_set, exc.__cause__ or exc, client_id=client.client_id, sealed_claims=sealed_claims
+            )
+            return f"{failure} {session_log.render({**lookup, 'retryable': _flag(transient)})}"
+
+        _warn_session(SESSION_REFRESH_CLIENT, describe)
+
+    async def _log_rejected_session(self, token: str) -> None:
+        """Warn when a still-valid FastMCP token 401s because its upstream session failed.
+
+        An expired or forged FastMCP token is routine (the client refreshes) and
+        stays at DEBUG. A token that verifies points at the upstream side, including
+        a session whose stored state is gone (a Valkey flush logs every user here).
+        """
+        payload = self._verified_payload(token, "access")
+        if payload is None:
+            logger.debug("load_access_token: upstream validation returned None (token invalid/expired)")
+            return
+        try:
+            token_set = await _bounded_lookup(self._stored_session(payload))
+            lookup = "missing"
+        except asyncio.TimeoutError:
+            token_set, lookup = None, "timeout"
+        _warn_session(SESSION_REJECTED, partial(_describe_rejected, token_set, payload, lookup))
+
+    async def _stored_session(self, payload: dict[str, Any]) -> UpstreamTokenSet | None:
+        return await self._stored_token_set(await self._upstream_token_id_for(payload))
+
+    async def _stored_token_set(self, upstream_token_id: str | None) -> UpstreamTokenSet | None:
+        """Stored upstream token set, or ``None`` on any miss; never raises."""
+        if upstream_token_id is None:
+            return None
+        try:
+            return await self._upstream_token_store.get(key=upstream_token_id)
+        except Exception:
+            return None
+
+    def _sealed_upstream_claims(self, token: str, token_use: str) -> dict[str, Any] | None:
+        """``upstream_claims`` sealed in an issued FastMCP token, or ``None``; never raises."""
+        return _sealed_claims_in(self._verified_payload(token, token_use) or {})
 
     async def _extract_upstream_claims(self, idp_tokens: dict[str, Any]) -> dict[str, Any] | None:
         id_token = idp_tokens.get(ID_TOKEN_KEY)
@@ -213,9 +409,8 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         if isinstance(cognito_username, str) and cognito_username:
             extracted[COGNITO_USERNAME_CLAIM] = cognito_username
         logger.debug(
-            "extract_upstream_claims: id_token_len=%d email=%s cognito:username=%s",
+            "extract_upstream_claims: id_token_len=%d cognito:username=%s",
             len(id_token),
-            extracted.get(EMAIL_CLAIM),
             extracted.get(COGNITO_USERNAME_CLAIM),
         )
         return extracted
@@ -237,7 +432,7 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         """
         validated = await super().load_access_token(token)
         if validated is None:
-            logger.debug("load_access_token: upstream validation returned None (token invalid/expired)")
+            await self._log_rejected_session(token)
             return None
 
         upstream = await self._resolve_upstream_claims(token)
@@ -254,8 +449,7 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         new_claims = dict(validated.claims or {})
         new_claims[UPSTREAM_CLAIMS_KEY] = upstream
         logger.debug(
-            "load_access_token: attached id_token identity (email=%s cognito:username=%s) over access-token sub=%s",
-            upstream.get(EMAIL_CLAIM),
+            "load_access_token: attached id_token identity (cognito:username=%s) over access-token sub=%s",
             upstream.get(COGNITO_USERNAME_CLAIM),
             new_claims.get("sub"),
         )
@@ -305,3 +499,34 @@ class PlaneCognitoProvider(AWSCognitoProvider):
         except Exception as exc:
             logger.warning("Cognito: failed to resolve upstream id_token: %s", exc)
             return None
+
+
+def _warn_session(message: str, describe: Callable[[], str]) -> None:
+    """Log a session failure; never raises, because callers sit inside ``except`` blocks."""
+    try:
+        context = describe()
+    except Exception as exc:
+        context = session_log.render({"context_error": type(exc).__name__})
+    logger.warning("%s: %s", message, context)
+
+
+async def _bounded_lookup(lookup: Awaitable[UpstreamTokenSet | None]) -> UpstreamTokenSet | None:
+    """Raises ``asyncio.TimeoutError`` after :data:`SESSION_LOOKUP_TIMEOUT_SECONDS`, nothing else."""
+    return await asyncio.wait_for(lookup, timeout=SESSION_LOOKUP_TIMEOUT_SECONDS)
+
+
+def _sealed_claims_in(payload: dict[str, Any]) -> dict[str, Any] | None:
+    claims = payload.get(UPSTREAM_CLAIMS_KEY)
+    return claims if isinstance(claims, dict) else None
+
+
+def _flag(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _describe_rejected(token_set: UpstreamTokenSet | None, payload: dict[str, Any], lookup: str) -> str:
+    if token_set is not None:
+        return session_log.describe_session(token_set)
+    return session_log.describe_identity(
+        _sealed_claims_in(payload), client_id=payload.get("client_id"), extra={"session_lookup": lookup}
+    )

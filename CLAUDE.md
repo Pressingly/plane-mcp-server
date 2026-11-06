@@ -196,17 +196,20 @@ the curated one.
 | Module | Responsibility |
 |---|---|
 | `cognito.py` | `PlaneCognitoProvider(AWSCognitoProvider)` — captures the Cognito **id_token** and stashes `{id_token, email, cognito:username}` under the issued JWT's `upstream_claims`. |
+| `refresh.py` | Client refresh hardening the Cognito provider composes: overlapping refreshes of one refresh token are serialised on FastMCP's per-upstream-token lock, and a duplicate presenting a just-rotated refresh token gets the newest tokens already issued (10s in-process replay, same client only, `expires_in` aged). A transient upstream failure (transport error, 5xx, 429) answers `503 temporarily_unavailable` with `Retry-After` and the `/token` CORS headers instead of `invalid_grant`, leaving the session intact for a retry. |
+| `session_log.py` | Token-free, email-free `key=value` context for a dead MCP session, copied verbatim from outline-mcp so one grep covers both: `sub`, `username` (mPass id), `client_id`, `session_age` (`NdHHhMMmSSs` since the original login, from `UpstreamTokenSet.created_at`), `upstream_token` (8-hex sha256 prefix), `error`, `status`, `oauth_error`, `detail`; its `describe_*` functions never raise. `cognito.py` logs it at WARNING under one prefix, `grep 'MCP session'`: `MCP session refresh failed (client):` (plus `retryable=true\|false`), `MCP session refresh failed (background):`, `MCP session rejected (401):` and `MCP session refresh token unknown:`, with `session_lookup=timeout\|missing` when the 1s-bounded store read did not find the session. |
 | `client.py` | `bearer_for(token, claims)` (forwards the id_token), `plane_request_auth()` (base_url + headers for raw **app-API** calls). |
 | `apitoken.py` | Mints/caches a Plane `APIToken` and builds the dual-header `PlaneClient` (see "The `/api/v1` 401 fix"). |
 | `selfhosted.py` | `SelfHostedPlaneClient` — normalises the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) and serves plane-sdk 0.3's Cloud-only routes from the self-hosted ones: `*-lite` lists → `projects/`, `cycles/`, `modules/`, `members/` (name and email filters applied here); `dependencies/` → `relations/`; custom relations → none; the workspace-wide work-item list and the workspace state catalogue → an error naming `project_id`. |
 | `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so `workitem`, `cycle` and `module` reject it with a `ToolError` instead of returning unfiltered results, and PQL is stripped from their descriptions; the `workitem list` line names `project_id` as required, since there is no workspace-wide list. |
 | `relations.py` | `restore_relation_types(mcp)` — upstream narrowed `workitem_relation create` to six dependency types; the self-hosted `relations/` route (`IssueRelationCreateSerializer.RELATION_TYPE_CHOICES`) also takes `relates_to` and `duplicate`, so those are routed straight to it, and the `relation_type` enum and footer advertise all eight. |
 | `trims.py` | `apply_self_hosted_trims(mcp)` — refuses arguments the server cannot honour, with the reason (`member list_workspace`'s role-slug/activity/bot filters and paging; custom relation definitions), and rewrites descriptions that name missing features (workspace state catalogue, role definitions, label fields of hidden actions). |
+| `links.py` | `guard_link_urls(mcp)` — refuses a `url` on `workitem_link` that is not a plain `http(s)://` address, because the self-hosted link PATCH does not validate the scheme and the web app renders the value as an `href`. |
 | `listing.py` | `AdvertisedArguments` — a `tools/list`-only transform dropping hidden actions' arguments and the unsupported ones from each schema. Execution keeps the full schema, so a call that sends one reaches the guard that explains the refusal. |
 | `aliases.py` | `MonetaAliases` — resolves the fork's eight old add/remove names (`add_work_item_assignee`, `add_work_items_to_cycle`, ...) to the `manage_*` actions with their original argument names, on `tools/call` only and through the curated tool. |
 | `middleware.py` | `ValidateActionArguments` — upstream's stray-argument check with the injected `workspace_slug` set aside; a call naming no action is answered with the curated actions. |
 | `instructions.py` | `MONETA_INSTRUCTIONS` — replaces upstream's epic recipe (built on `workitem_type` and PQL, both unavailable here). |
-| `surface.py` | `apply_moneta_surface(mcp)` — runs `register_moneta_tools`, `disable_pql`, `restore_relation_types`, `apply_self_hosted_trims`, `add_workspace_arg`, `apply_tool_visibility` (last), adds the `MonetaAliases` and `AdvertisedArguments` transforms and sets the instructions. |
+| `surface.py` | `apply_moneta_surface(mcp)` — runs `register_moneta_tools`, `disable_pql`, `restore_relation_types`, `apply_self_hosted_trims`, `guard_link_urls`, `add_workspace_arg`, `annotate_tools`, `apply_tool_visibility` (last), adds the `MonetaAliases` and `AdvertisedArguments` transforms and sets the instructions. |
 | `workspace.py` | `resolve_workspace(claim, env)` precedence resolver + `_fetch_workspaces()` (raw GET `/api/users/me/workspaces/`). |
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
@@ -303,7 +306,7 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
 | `project` | list, retrieve, update |
 | `workitem` | list, retrieve, retrieve_by_identifier, search, create, update, manage_assignee, manage_label |
 | `workitem_comment` | list, retrieve, create, update, delete |
-| `workitem_link` | list, retrieve |
+| `workitem_link` | list, retrieve, create, update, delete |
 | `workitem_relation` | list, create (no delete: the self-hosted API has no remove route) |
 | `cycle` | list, retrieve, create, update, list_workitems, manage_workitems, transfer_workitems, complete |
 | `module` | list, retrieve, list_workitems, manage_workitems |
