@@ -364,6 +364,29 @@ def test_list_projects_uses_the_full_route(server, monkeypatch):
     assert "include_archived" not in (fake.gets[0][1] or {})
 
 
+def test_list_projects_takes_no_sparse_fields(server, monkeypatch):
+    """FOSS-495: a ``fields`` list without ``name`` used to fail ProjectLite validation."""
+    fake = FakePlane(fork_page({"id": PROJECT, "identifier": "FOSS", "name": "FOSS"}))
+    wire(monkeypatch, fake)
+
+    async def run():
+        async with Client(server) as c:
+            return await c.call_tool("project", {"action": "list", "fields": "id,identifier"})
+
+    assert "does not take: fields" in asyncio.run(run()).content[0].text
+    assert fake.gets == []
+
+
+def test_retired_list_projects_name_uses_the_full_route(server, monkeypatch):
+    fake = FakePlane(fork_page({"id": PROJECT, "identifier": "FOSS", "name": "FOSS"}))
+    wire(monkeypatch, fake)
+
+    result = call(server, "list_projects", {})
+
+    assert [project["id"] for project in result["results"]] == [PROJECT]
+    assert fake.gets[0][0] == "acme/projects"
+
+
 def test_list_cycles_accepts_a_bare_list_from_the_full_route(server, monkeypatch):
     fake = FakePlane(
         [{"id": "cycle-uuid", "name": "Sprint 42", "project": PROJECT, "workspace": "ws", "owned_by": USER}]
