@@ -334,6 +334,65 @@ def test_a_failed_removal_surfaces_the_status(server, monkeypatch):
         call(server, *DELETE_CALLS[0])
 
 
+class SequencedRelations(FakeRelations):
+    """Answers each ``relations/`` read with the next response in turn."""
+
+    def __init__(self, *responses: Any) -> None:
+        super().__init__()
+        self.responses = list(responses)
+
+    def get(self, endpoint: str, params: Any = None) -> Any:
+        self.gets.append((endpoint, params))
+        return self.responses.pop(0)
+
+
+def delete_args(related: str) -> dict[str, Any]:
+    return {"action": "delete", "project_id": PROJECT, "workitem_id": ITEM, "related_workitem_id": related}
+
+
+def test_a_sign_in_page_from_the_relation_read_is_reported_as_sign_in(server, monkeypatch):
+    fake = FakeRelations("<html><body>Sign in</body></html>")
+    session = wire_signed_in(monkeypatch, fake, response(204))
+
+    with pytest.raises(ToolError, match="needs a signed-in"):
+        call(server, *DELETE_CALLS[0])
+    assert session.posts == []
+
+
+def test_an_uppercase_uuid_matches_the_listed_pair(server, monkeypatch):
+    session = wire_signed_in(monkeypatch, FakeRelations(BLOCKED_BY_OTHER), response(204))
+
+    call(server, "workitem_relation", delete_args(OTHER.upper()))
+
+    assert session.posts[0]["json"] == {"relation_type": "blocked_by", "related_issue": OTHER}
+
+
+def test_an_identifier_instead_of_a_uuid_is_refused_by_name(server, monkeypatch):
+    fake = FakeRelations(BLOCKED_BY_OTHER)
+    session = wire_signed_in(monkeypatch, fake, response(204))
+
+    with pytest.raises(ToolError, match="must be a work item UUID, not 'FOSS-12'"):
+        call(server, "workitem_relation", delete_args("FOSS-12"))
+    assert fake.gets == []
+    assert session.posts == []
+
+
+def test_a_500_after_a_concurrent_removal_says_it_is_already_gone(server, monkeypatch):
+    fake = SequencedRelations(BLOCKED_BY_OTHER, {"blocked_by": []})
+    wire_signed_in(monkeypatch, fake, response(500))
+
+    with pytest.raises(ToolError, match="already gone"):
+        call(server, *DELETE_CALLS[0])
+    assert len(fake.gets) == 2
+
+
+def test_a_500_with_the_pair_still_listed_surfaces_the_status(server, monkeypatch):
+    wire_signed_in(monkeypatch, SequencedRelations(BLOCKED_BY_OTHER, BLOCKED_BY_OTHER), response(500))
+
+    with pytest.raises(ToolError, match="500"):
+        call(server, *DELETE_CALLS[0])
+
+
 def test_remove_url_is_the_app_route_beside_api_v1():
     assert remove_relation_url("https://pm.example/api/v1", "acme", PROJECT, ITEM) == REMOVE_URL
     assert remove_relation_url("https://pm.example/api/v1/", "acme", PROJECT, ITEM) == REMOVE_URL

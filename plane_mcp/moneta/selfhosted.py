@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+from uuid import UUID
 
 from fastmcp.exceptions import ToolError
 from plane import PlaneClient
@@ -89,6 +90,15 @@ NO_WORKSPACE_STATES = (
 NO_RELATION_TEMPLATE = (
     "Work item {item} has no relation with {related}, so there is nothing to remove. "
     "`workitem_relation list` shows its relations."
+)
+
+ALREADY_REMOVED_TEMPLATE = (
+    "The relation between work items {item} and {related} is already gone: it was removed while this call was running."
+)
+
+NOT_A_WORK_ITEM_ID = (
+    "related_workitem_id must be a work item UUID, not {value!r}. "
+    "`workitem retrieve_by_identifier` turns an identifier like FOSS-12 into one."
 )
 
 SIGNED_IN_ONLY = (
@@ -217,6 +227,14 @@ def dependency_groups(response: Mapping[str, Any]) -> dict[str, list[dict[str, A
     }
 
 
+def canonical_work_item_id(value: str) -> str:
+    """``value`` in the lowercase hyphenated form Plane lists ids in."""
+    try:
+        return str(UUID(value))
+    except (ValueError, TypeError, AttributeError):
+        raise ToolError(NOT_A_WORK_ITEM_ID.format(value=value)) from None
+
+
 def relation_type_with(groups: Mapping[str, list[Mapping[str, Any]]], related_id: str) -> str | None:
     """The first relation type, from this work item's side, under which ``related_id`` is listed."""
     return next((kind for kind, entries in groups.items() if any(e.get("id") == related_id for e in entries)), None)
@@ -224,6 +242,16 @@ def relation_type_with(groups: Mapping[str, list[Mapping[str, Any]]], related_id
 
 def _relations_route(workspace_slug: str, project_id: str, work_item_id: str) -> str:
     return f"{workspace_slug}/projects/{project_id}/work-items/{work_item_id}/relations"
+
+
+def _relation_groups(
+    resource: BaseResource, workspace_slug: str, project_id: str, work_item_id: str
+) -> dict[str, list[dict[str, Any]]]:
+    """The pair groups ``relations/`` lists; anything but JSON means the sign-in proxy answered instead."""
+    response = resource._get(_relations_route(workspace_slug, project_id, work_item_id))
+    if not isinstance(response, Mapping):
+        raise ToolError(SIGNED_IN_ONLY)
+    return dependency_groups(response)
 
 
 def remove_relation_url(base_path: str, workspace_slug: str, project_id: str, work_item_id: str) -> str:
@@ -243,23 +271,35 @@ def remove_relation(
     sends it: the route ignores it, but the activity entry it queues is labelled
     with it. Redirects are not followed: a redirect means the request never got past the
     sign-in proxy, and following it would turn the POST into a GET that succeeds.
+    A 500 is what the route answers when the relation vanished after the check (a
+    concurrent removal, or a lagging read replica), so it is re-checked before it is
+    reported as a failure.
     """
     if not resource.config.access_token:
         raise ToolError(SIGNED_IN_ONLY)
-    groups = dependency_groups(resource._get(_relations_route(workspace_slug, project_id, work_item_id)) or {})
-    relation_type = relation_type_with(groups, related_work_item_id)
+    related_id = canonical_work_item_id(related_work_item_id)
+    relation_type = relation_type_with(_relation_groups(resource, workspace_slug, project_id, work_item_id), related_id)
     if relation_type is None:
-        raise ToolError(NO_RELATION_TEMPLATE.format(item=work_item_id, related=related_work_item_id))
+        raise ToolError(NO_RELATION_TEMPLATE.format(item=work_item_id, related=related_id))
     response = resource.session.post(
         remove_relation_url(resource.config.base_path, workspace_slug, project_id, work_item_id),
         headers=resource._headers(),
-        json={"relation_type": relation_type, "related_issue": related_work_item_id},
+        json={"relation_type": relation_type, "related_issue": related_id},
         timeout=resource.config.timeout,
         allow_redirects=False,
     )
     if response.is_redirect:
         raise ToolError(SIGNED_IN_ONLY)
+    if response.status_code == 500 and _pair_is_gone(resource, workspace_slug, project_id, work_item_id, related_id):
+        raise ToolError(ALREADY_REMOVED_TEMPLATE.format(item=work_item_id, related=related_id))
     resource._handle_response(response)
+
+
+def _pair_is_gone(
+    resource: BaseResource, workspace_slug: str, project_id: str, work_item_id: str, related_id: str
+) -> bool:
+    groups = _relation_groups(resource, workspace_slug, project_id, work_item_id)
+    return relation_type_with(groups, related_id) is None
 
 
 class SelfHostedDependencies(WorkItemDependencies):
