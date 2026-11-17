@@ -381,13 +381,21 @@ def test_a_500_after_a_concurrent_removal_says_it_is_already_gone(server, monkey
     fake = SequencedRelations(BLOCKED_BY_OTHER, {"blocked_by": []})
     wire_signed_in(monkeypatch, fake, response(500))
 
-    with pytest.raises(ToolError, match="already gone"):
+    with pytest.raises(ToolError, match="is gone, but Plane answered 500"):
         call(server, *DELETE_CALLS[0])
     assert len(fake.gets) == 2
 
 
 def test_a_500_with_the_pair_still_listed_surfaces_the_status(server, monkeypatch):
     wire_signed_in(monkeypatch, SequencedRelations(BLOCKED_BY_OTHER, BLOCKED_BY_OTHER), response(500))
+
+    with pytest.raises(ToolError, match="500"):
+        call(server, *DELETE_CALLS[0])
+
+
+def test_a_500_whose_re_read_fails_surfaces_the_original_status(server, monkeypatch):
+    fake = SequencedRelations(BLOCKED_BY_OTHER, "<html><body>Sign in</body></html>")
+    wire_signed_in(monkeypatch, fake, response(500))
 
     with pytest.raises(ToolError, match="500"):
         call(server, *DELETE_CALLS[0])

@@ -54,6 +54,7 @@ from plane.api.work_items.custom_relations import WorkItemCustomRelations
 from plane.api.work_items.dependencies import WorkItemDependencies
 from plane.api.workspace_states import WorkspaceStates
 from plane.api.workspaces import Workspaces
+from plane.errors.errors import HttpError
 from plane.models.cycles import PaginatedCycleLiteResponse, PaginatedCycleResponse, PaginatedCycleWorkItemResponse
 from plane.models.modules import PaginatedModuleLiteResponse, PaginatedModuleWorkItemResponse
 from plane.models.projects import PaginatedProjectLiteResponse
@@ -93,7 +94,8 @@ NO_RELATION_TEMPLATE = (
 )
 
 ALREADY_REMOVED_TEMPLATE = (
-    "The relation between work items {item} and {related} is already gone: it was removed while this call was running."
+    "The relation between work items {item} and {related} is gone, but Plane answered 500,"
+    " so its activity entry may be missing."
 )
 
 NOT_A_WORK_ITEM_ID = (
@@ -298,7 +300,10 @@ def remove_relation(
 def _pair_is_gone(
     resource: BaseResource, workspace_slug: str, project_id: str, work_item_id: str, related_id: str
 ) -> bool:
-    groups = _relation_groups(resource, workspace_slug, project_id, work_item_id)
+    try:
+        groups = _relation_groups(resource, workspace_slug, project_id, work_item_id)
+    except (HttpError, ToolError):
+        return False
     return relation_type_with(groups, related_id) is None
 
 
