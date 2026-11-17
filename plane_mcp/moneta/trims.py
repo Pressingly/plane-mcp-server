@@ -58,6 +58,13 @@ UNSUPPORTED_ARGUMENTS: Mapping[str, Mapping[str, str]] = {
     },
 }
 
+# Accepted but not advertised: arguments that change nothing on this server. Refusing them
+# would break callers that send upstream's defaults, so they are only left out of tools/list.
+UNADVERTISED_ARGUMENTS: Mapping[str, frozenset[str]] = {
+    # Every relation lives in the one relations/ system (moneta.selfhosted.remove_relation).
+    "workitem_relation": frozenset({"is_dependency"}),
+}
+
 STATE_FOOTER = (
     "States belong to a project, so project_id is required. Each project also has a triage state, "
     "which Plane owns and does not list."

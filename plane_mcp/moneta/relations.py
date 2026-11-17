@@ -15,6 +15,11 @@ upstream argument checks, runs unchanged. Listing needs nothing here:
 group ``relations/`` sends. The ``relation_type`` enum and the footer advertise
 the full set, and the footer no longer points at custom definitions, which this
 server does not have.
+
+``delete`` needs no routing here either: both SDK remove calls go to the one
+self-hosted remove route (:func:`plane_mcp.moneta.selfhosted.remove_relation`), so
+``is_dependency`` changes nothing. The delete line drops it and says what a removal
+does instead.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from plane.models.work_items import CreateWorkItemRelation
 
 from plane_mcp import client as plane_client
 from plane_mcp.toolkit import coerce_list
+from plane_mcp.tools.workitem_relation import ACTIONS as UPSTREAM_ACTIONS
 from plane_mcp.tools.workitem_relation import DEPENDENCY_TYPES
 from plane_mcp.tools.workitem_relation import FOOTER as UPSTREAM_FOOTER
 from plane_mcp.tools.workitem_relation import NAME as RELATION_TOOL
@@ -89,12 +95,20 @@ def with_relation_type_enum(parameters: dict[str, Any]) -> dict[str, Any]:
 CUSTOM_RELATION_NOTE = " -- pass relation_type for a dependency, or definition id + label for a custom relation"
 SELF_HOSTED_CREATE_NOTE = " -- pass relation_type"
 
+_UPSTREAM_DELETE_NOTE = next(action.note for action in UPSTREAM_ACTIONS if action.name == "delete")
+UPSTREAM_DELETE_TAIL = f"; optional is_dependency) -- {_UPSTREAM_DELETE_NOTE}"
+SELF_HOSTED_DELETE_TAIL = (
+    ") -- removes the relation between the two work items whatever its type, from either side; "
+    "where they share more than one relation, each call removes one"
+)
+
 
 def _restored(tool: Tool) -> Tool:
     description = (
         (tool.description or "")
         .replace(UPSTREAM_FOOTER, SELF_HOSTED_FOOTER)
         .replace(CUSTOM_RELATION_NOTE, SELF_HOSTED_CREATE_NOTE)
+        .replace(UPSTREAM_DELETE_TAIL, SELF_HOSTED_DELETE_TAIL)
     )
     wrapped = Tool.from_tool(tool, transform_fn=_route_restored_types, description=description)
     return wrapped.model_copy(update={"parameters": with_relation_type_enum(wrapped.parameters)})

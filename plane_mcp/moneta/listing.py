@@ -7,7 +7,9 @@ answer. So the trimming happens here, in ``tools/list`` only, the way upstream's
 ``StripOutputSchemas`` drops output schemas. A listed tool omits the arguments only
 its hidden actions use and the arguments in
 :data:`plane_mcp.moneta.trims.UNSUPPORTED_ARGUMENTS`; a call that sends one anyway
-still reaches the guard that refuses it with a reason.
+still reaches the guard that refuses it with a reason. The arguments in
+:data:`plane_mcp.moneta.trims.UNADVERTISED_ARGUMENTS` are left out too, and are
+accepted and ignored when sent.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Any
 from fastmcp.server.transforms import Transform
 from fastmcp.tools.base import Tool
 
-from plane_mcp.moneta.trims import UNSUPPORTED_ARGUMENTS
+from plane_mcp.moneta.trims import UNADVERTISED_ARGUMENTS, UNSUPPORTED_ARGUMENTS
 from plane_mcp.moneta.visibility import ALWAYS_ADVERTISED, catalogue, declared_arguments
 
 
@@ -39,7 +41,7 @@ class AdvertisedArguments(Transform):
 
     @staticmethod
     def _unadvertised(name: str, actions: frozenset[str], declared: frozenset[str]) -> frozenset[str]:
-        unsupported = frozenset(UNSUPPORTED_ARGUMENTS.get(name, {}))
+        unsupported = frozenset(UNSUPPORTED_ARGUMENTS.get(name, {})) | UNADVERTISED_ARGUMENTS.get(name, frozenset())
         if actions >= declared:
             return unsupported
         every = declared_arguments(name, declared)

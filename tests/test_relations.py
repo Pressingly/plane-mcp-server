@@ -15,12 +15,19 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from requests import Response
 
 import plane_mcp.client as client_module
 import plane_mcp.tools.workitem_relation as relation_tools
 from plane_mcp.client import PlaneClientContext
-from plane_mcp.moneta.relations import RELATION_TYPES, RESTORED_TYPES, SELF_HOSTED_FOOTER
-from plane_mcp.moneta.selfhosted import SelfHostedPlaneClient
+from plane_mcp.moneta.relations import (
+    RELATION_TYPES,
+    RESTORED_TYPES,
+    SELF_HOSTED_DELETE_TAIL,
+    SELF_HOSTED_FOOTER,
+    UPSTREAM_DELETE_TAIL,
+)
+from plane_mcp.moneta.selfhosted import SelfHostedPlaneClient, remove_relation_url
 from plane_mcp.server import get_stdio_mcp
 
 PROJECT = "11111111-1111-1111-1111-111111111111"
@@ -87,7 +94,7 @@ def call(server: FastMCP, tool: str, args: dict[str, Any]) -> Any:
     result = asyncio.run(run())
     content = result.structured_content
     if content is None:
-        return json.loads(result.content[0].text)
+        return json.loads(result.content[0].text) if result.content else None
     return content.get("result", content) if isinstance(content, dict) else content
 
 
@@ -102,11 +109,13 @@ def test_relation_type_enum_and_description_name_every_type(server):
     assert SELF_HOSTED_FOOTER in tool.description
     assert "list_definitions" not in tool.description
     create_line = next(line for line in tool.description.split("\n") if line.startswith("  create ("))
-    assert create_line.endswith("-- pass relation_type.")
+    assert create_line.endswith("-- pass relation_type;")
     assert "relation_definition" not in tool.description
-    assert set(tool.inputSchema["properties"]["action"]["enum"]) == {"list", "create"}
+    assert set(tool.inputSchema["properties"]["action"]["enum"]) == {"list", "create", "delete"}
     assert "is_dependency" not in tool.inputSchema["properties"]
     assert "is_dependency" not in tool.description
+    delete_line = next(line for line in tool.description.split("\n") if line.startswith("  delete ("))
+    assert delete_line == f"  delete (project_id, workitem_id, related_workitem_id{SELF_HOSTED_DELETE_TAIL}."
     assert "workspace_slug" in tool.inputSchema["properties"]
 
 
@@ -199,17 +208,140 @@ def test_list_returns_relates_to_and_duplicate(server, monkeypatch):
     assert dependencies["duplicate"][0]["relation_type"] == "duplicate"
 
 
-def test_delete_is_refused_with_the_reason(server, monkeypatch):
-    fake = FakeRelations()
-    wire(monkeypatch, fake)
+REMOVE_URL = f"https://pm.example/api/workspaces/acme/projects/{PROJECT}/issues/{ITEM}/remove-relation/"
+BLOCKED_BY_OTHER = {"blocked_by": [{"issue_id": OTHER, "project_id": PROJECT}], "relates_to": []}
 
-    for tool, args in (
-        ("workitem_relation", {"action": "delete", "project_id": PROJECT, "workitem_id": ITEM}),
-        ("remove_work_item_relation", {"project_id": PROJECT, "work_item_id": ITEM, "related_work_item_id": OTHER}),
-    ):
-        with pytest.raises(ToolError, match="Removing a relation is not supported on this Plane server"):
-            call(server, tool, args)
-    assert fake.posts == []
+
+def response(status: int, headers: dict[str, str] | None = None) -> Response:
+    reply = Response()
+    reply.status_code = status
+    reply.headers.update(headers or {})
+    reply._content = b""
+    return reply
+
+
+class FakeSession:
+    def __init__(self, reply: Response) -> None:
+        self.reply = reply
+        self.posts: list[dict[str, Any]] = []
+
+    def post(self, url: str, **kwargs: Any) -> Response:
+        self.posts.append({"url": url, **kwargs})
+        return self.reply
+
+
+def signed_in_client() -> SelfHostedPlaneClient:
+    """The dual-header client the Cognito path builds: id_token Bearer plus a minted key."""
+    client = SelfHostedPlaneClient(base_url="https://pm.example", access_token="id-token")
+    client.config.api_key = "minted"
+    return client
+
+
+def wire_signed_in(
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeRelations,
+    reply: Response,
+    client: SelfHostedPlaneClient | None = None,
+) -> FakeSession:
+    """Fake the relation reads and app-route posts of ``client`` (signed in by default)."""
+    client = client or signed_in_client()
+    session = FakeSession(reply)
+    for resource in (client.work_items.dependencies, client.work_items.custom_relations):
+        monkeypatch.setattr(resource, "_get", fake.get)
+        monkeypatch.setattr(resource, "session", session)
+    context = PlaneClientContext(client=client, workspace_slug="acme")
+    for module in (client_module, relation_tools):
+        monkeypatch.setattr(module, "get_plane_client_context", lambda: context)
+    return session
+
+
+DELETE_CALLS = (
+    (
+        "workitem_relation",
+        {"action": "delete", "project_id": PROJECT, "workitem_id": ITEM, "related_workitem_id": OTHER},
+    ),
+    (
+        "workitem_relation",
+        {
+            "action": "delete",
+            "project_id": PROJECT,
+            "workitem_id": ITEM,
+            "related_workitem_id": OTHER,
+            "is_dependency": True,
+        },
+    ),
+    ("remove_work_item_relation", {"project_id": PROJECT, "work_item_id": ITEM, "related_work_item_id": OTHER}),
+)
+
+
+@pytest.mark.parametrize(("tool", "args"), DELETE_CALLS)
+def test_delete_posts_the_pair_to_the_remove_relation_route(server, monkeypatch, tool, args):
+    fake = FakeRelations(BLOCKED_BY_OTHER)
+    session = wire_signed_in(monkeypatch, fake, response(204))
+
+    assert call(server, tool, args) is None
+    assert fake.gets == [(f"acme/projects/{PROJECT}/work-items/{ITEM}/relations", None)]
+    assert len(session.posts) == 1
+    post = session.posts[0]
+    assert post["url"] == REMOVE_URL
+    assert post["json"] == {"related_issue": OTHER}
+    assert post["allow_redirects"] is False
+    assert post["headers"]["Authorization"] == "Bearer id-token"
+
+
+def test_delete_finds_the_pair_from_the_other_side(server, monkeypatch):
+    fake = FakeRelations({"blocking": [{"issue_id": OTHER, "project_id": PROJECT}]})
+    session = wire_signed_in(monkeypatch, fake, response(204))
+
+    call(server, *DELETE_CALLS[0])
+
+    assert session.posts[0]["json"] == {"related_issue": OTHER}
+
+
+def test_delete_of_an_unrelated_pair_is_refused_before_the_post(server, monkeypatch):
+    fake = FakeRelations({"blocked_by": [], "relates_to": [{"issue_id": ITEM, "project_id": PROJECT}]})
+    session = wire_signed_in(monkeypatch, fake, response(204))
+
+    with pytest.raises(ToolError, match=f"has no relation with {OTHER}"):
+        call(server, *DELETE_CALLS[0])
+    assert session.posts == []
+
+
+def test_delete_on_an_api_key_connection_is_refused_before_any_request(server, monkeypatch):
+    fake = FakeRelations(BLOCKED_BY_OTHER)
+    session = wire_signed_in(
+        monkeypatch, fake, response(204), SelfHostedPlaneClient(base_url="https://pm.example", api_key="pat")
+    )
+
+    with pytest.raises(ToolError, match="needs a signed-in"):
+        call(server, *DELETE_CALLS[0])
+    assert fake.gets == []
+    assert session.posts == []
+
+
+def test_a_redirect_to_sign_in_is_not_reported_as_a_removal(server, monkeypatch):
+    fake = FakeRelations(BLOCKED_BY_OTHER)
+    wire_signed_in(monkeypatch, fake, response(302, {"location": "https://auth.example/oauth2/start"}))
+
+    with pytest.raises(ToolError, match="needs a signed-in"):
+        call(server, *DELETE_CALLS[0])
+
+
+def test_a_failed_removal_surfaces_the_status(server, monkeypatch):
+    wire_signed_in(monkeypatch, FakeRelations(BLOCKED_BY_OTHER), response(403))
+
+    with pytest.raises(ToolError, match="403"):
+        call(server, *DELETE_CALLS[0])
+
+
+def test_remove_url_is_the_app_route_beside_api_v1():
+    assert remove_relation_url("https://pm.example/api/v1", "acme", PROJECT, ITEM) == REMOVE_URL
+    assert remove_relation_url("https://pm.example/api/v1/", "acme", PROJECT, ITEM) == REMOVE_URL
+
+
+def test_upstream_delete_note_is_still_the_one_rewritten():
+    tool_text = relation_tools.build_description("x", relation_tools.ACTIONS, relation_tools.FOOTER)
+    assert UPSTREAM_DELETE_TAIL in tool_text
 
 
 def test_custom_relation_arguments_are_refused(server, monkeypatch):
