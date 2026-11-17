@@ -161,6 +161,9 @@ This repo follows the same convention as every other app in the bundle:
 
 - Work goes `branch` → PR into `foss-sandbox` → promote to `foss-main`. Never commit directly to
   either, and never target `foss-main` from a feature branch.
+- Every PR into `foss-sandbox` adds its entry to `CHANGELOG.md` under **Unreleased** (anything a
+  client, gateway policy or operator must act on goes under **Behaviour changes**); cutting a tag
+  renames that heading to the tag. The promotion PR and the DevOps handoff take their notes from it.
 - The Moneta integration **is committed**, on `foss-main` and `foss-sandbox`. Do not look for it
   on `main`: `main` has no `plane_mcp/moneta/` package and no Cognito hook in `__main__.py`, so a
   server built from it has no SSO mode, no `list_workspaces`, and no `workspace_slug` argument.
