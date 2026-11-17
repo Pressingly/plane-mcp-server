@@ -99,7 +99,7 @@ _UPSTREAM_DELETE_NOTE = next(action.note for action in UPSTREAM_ACTIONS if actio
 UPSTREAM_DELETE_TAIL = f"; optional is_dependency) -- {_UPSTREAM_DELETE_NOTE}"
 SELF_HOSTED_DELETE_TAIL = (
     ") -- removes the relation between the two work items whatever its type, from either side; "
-    "where they share more than one relation, each call removes one"
+    "where they share more than one relation, each call removes the most recently created one"
 )
 
 
