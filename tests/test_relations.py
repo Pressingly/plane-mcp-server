@@ -284,7 +284,7 @@ def test_delete_posts_the_pair_to_the_remove_relation_route(server, monkeypatch,
     assert len(session.posts) == 1
     post = session.posts[0]
     assert post["url"] == REMOVE_URL
-    assert post["json"] == {"related_issue": OTHER}
+    assert post["json"] == {"relation_type": "blocked_by", "related_issue": OTHER}
     assert post["allow_redirects"] is False
     assert post["headers"]["Authorization"] == "Bearer id-token"
 
@@ -295,7 +295,7 @@ def test_delete_finds_the_pair_from_the_other_side(server, monkeypatch):
 
     call(server, *DELETE_CALLS[0])
 
-    assert session.posts[0]["json"] == {"related_issue": OTHER}
+    assert session.posts[0]["json"] == {"relation_type": "blocking", "related_issue": OTHER}
 
 
 def test_delete_of_an_unrelated_pair_is_refused_before_the_post(server, monkeypatch):

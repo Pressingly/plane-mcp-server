@@ -217,9 +217,9 @@ def dependency_groups(response: Mapping[str, Any]) -> dict[str, list[dict[str, A
     }
 
 
-def related_ids(groups: Mapping[str, list[Mapping[str, Any]]]) -> frozenset[str]:
-    """Every work item id that appears in any relation group."""
-    return frozenset(entry["id"] for entries in groups.values() for entry in entries if entry.get("id"))
+def relation_type_with(groups: Mapping[str, list[Mapping[str, Any]]], related_id: str) -> str | None:
+    """The first relation type, from this work item's side, under which ``related_id`` is listed."""
+    return next((kind for kind, entries in groups.items() if any(e.get("id") == related_id for e in entries)), None)
 
 
 def _relations_route(workspace_slug: str, project_id: str, work_item_id: str) -> str:
@@ -239,18 +239,21 @@ def remove_relation(
 
     The app route deletes the first relation it finds between the pair and answers
     500 when there is none, so the pair is checked against ``relations/`` first.
-    Redirects are not followed: a redirect means the request never got past the
+    The body carries ``relation_type`` from this work item's side, as the web app
+    sends it: the route ignores it, but the activity entry it queues is labelled
+    with it. Redirects are not followed: a redirect means the request never got past the
     sign-in proxy, and following it would turn the POST into a GET that succeeds.
     """
     if not resource.config.access_token:
         raise ToolError(SIGNED_IN_ONLY)
     groups = dependency_groups(resource._get(_relations_route(workspace_slug, project_id, work_item_id)) or {})
-    if related_work_item_id not in related_ids(groups):
+    relation_type = relation_type_with(groups, related_work_item_id)
+    if relation_type is None:
         raise ToolError(NO_RELATION_TEMPLATE.format(item=work_item_id, related=related_work_item_id))
     response = resource.session.post(
         remove_relation_url(resource.config.base_path, workspace_slug, project_id, work_item_id),
         headers=resource._headers(),
-        json={"related_issue": related_work_item_id},
+        json={"relation_type": relation_type, "related_issue": related_work_item_id},
         timeout=resource.config.timeout,
         allow_redirects=False,
     )
