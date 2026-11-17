@@ -21,6 +21,12 @@ plane-sdk's models are written against Plane Cloud. Our self-hosted Plane
   they are served from the full routes (``projects/``, ``cycles/``, ``modules/``,
   ``members/``, ``relations/``) and reshaped into the models the SDK expects.
   ``members/`` applies no filters, so the member filters run here.
+* Relations have no remove route on ``/api/v1`` at all: ``relations/`` serves GET and
+  POST only. The web app removes one through the app route
+  ``issues/<id>/remove-relation/`` (``IssueRelationViewSet.remove_relation``), so
+  both of the SDK's remove calls go there. That route authenticates by session
+  only, which mPass establishes from the id_token Bearer, so it needs the Cognito
+  connection; an ``X-Api-Key``-only connection is refused before the call.
 * There is no workspace-wide work-item list and no workspace state catalogue, so an
   unscoped list, or a state call without a project, fails with a message naming
   ``project_id`` instead of an opaque 404.
@@ -34,9 +40,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+from uuid import UUID
 
 from fastmcp.exceptions import ToolError
 from plane import PlaneClient
+from plane.api.base_resource import BaseResource
 from plane.api.cycles import Cycles
 from plane.api.modules import Modules
 from plane.api.projects import Projects
@@ -46,6 +54,7 @@ from plane.api.work_items.custom_relations import WorkItemCustomRelations
 from plane.api.work_items.dependencies import WorkItemDependencies
 from plane.api.workspace_states import WorkspaceStates
 from plane.api.workspaces import Workspaces
+from plane.errors.errors import HttpError
 from plane.models.cycles import PaginatedCycleLiteResponse, PaginatedCycleResponse, PaginatedCycleWorkItemResponse
 from plane.models.modules import PaginatedModuleLiteResponse, PaginatedModuleWorkItemResponse
 from plane.models.projects import PaginatedProjectLiteResponse
@@ -77,6 +86,26 @@ NO_WORKSPACE_LIST = (
 NO_WORKSPACE_STATES = (
     "This Plane server keeps workflow states per project and has no workspace state catalogue: "
     "pass project_id (`project list` returns the project ids)."
+)
+
+NO_RELATION_TEMPLATE = (
+    "Work item {item} has no relation with {related}, so there is nothing to remove. "
+    "`workitem_relation list` shows its relations."
+)
+
+ALREADY_REMOVED_TEMPLATE = (
+    "The relation between work items {item} and {related} is gone, but Plane answered 500,"
+    " so its activity entry may be missing."
+)
+
+NOT_A_WORK_ITEM_ID = (
+    "related_workitem_id must be a work item UUID, not {value!r}. "
+    "`workitem retrieve_by_identifier` turns an identifier like FOSS-12 into one."
+)
+
+SIGNED_IN_ONLY = (
+    "Removing a relation needs a signed-in (Cognito) connection: Plane removes relations only through "
+    "its web app's session-authenticated route, which an API-key connection cannot reach."
 )
 
 # The fields UserLiteSerializer sends for each member, which are all a filter can match.
@@ -200,11 +229,89 @@ def dependency_groups(response: Mapping[str, Any]) -> dict[str, list[dict[str, A
     }
 
 
+def canonical_work_item_id(value: str) -> str:
+    """``value`` in the lowercase hyphenated form Plane lists ids in."""
+    try:
+        return str(UUID(value))
+    except (ValueError, TypeError, AttributeError):
+        raise ToolError(NOT_A_WORK_ITEM_ID.format(value=value)) from None
+
+
+def relation_type_with(groups: Mapping[str, list[Mapping[str, Any]]], related_id: str) -> str | None:
+    """The first relation type, from this work item's side, under which ``related_id`` is listed."""
+    return next((kind for kind, entries in groups.items() if any(e.get("id") == related_id for e in entries)), None)
+
+
+def _relations_route(workspace_slug: str, project_id: str, work_item_id: str) -> str:
+    return f"{workspace_slug}/projects/{project_id}/work-items/{work_item_id}/relations"
+
+
+def _relation_groups(
+    resource: BaseResource, workspace_slug: str, project_id: str, work_item_id: str
+) -> dict[str, list[dict[str, Any]]]:
+    """The pair groups ``relations/`` lists; anything but JSON means the sign-in proxy answered instead."""
+    response = resource._get(_relations_route(workspace_slug, project_id, work_item_id))
+    if not isinstance(response, Mapping):
+        raise ToolError(SIGNED_IN_ONLY)
+    return dependency_groups(response)
+
+
+def remove_relation_url(base_path: str, workspace_slug: str, project_id: str, work_item_id: str) -> str:
+    """The app route the web app removes a relation through; ``base_path`` ends in ``/api/v1``."""
+    app_api = base_path.rstrip("/").removesuffix("/v1")
+    return f"{app_api}/workspaces/{workspace_slug}/projects/{project_id}/issues/{work_item_id}/remove-relation/"
+
+
+def remove_relation(
+    resource: BaseResource, workspace_slug: str, project_id: str, work_item_id: str, related_work_item_id: str
+) -> None:
+    """Remove the relation between two work items, in whichever direction it was created.
+
+    The app route deletes the first relation it finds between the pair and answers
+    500 when there is none, so the pair is checked against ``relations/`` first.
+    The body carries ``relation_type`` from this work item's side, as the web app
+    sends it: the route ignores it, but the activity entry it queues is labelled
+    with it. Redirects are not followed: a redirect means the request never got past the
+    sign-in proxy, and following it would turn the POST into a GET that succeeds.
+    A 500 is what the route answers when the relation vanished after the check (a
+    concurrent removal, or a lagging read replica), so it is re-checked before it is
+    reported as a failure.
+    """
+    if not resource.config.access_token:
+        raise ToolError(SIGNED_IN_ONLY)
+    related_id = canonical_work_item_id(related_work_item_id)
+    relation_type = relation_type_with(_relation_groups(resource, workspace_slug, project_id, work_item_id), related_id)
+    if relation_type is None:
+        raise ToolError(NO_RELATION_TEMPLATE.format(item=work_item_id, related=related_id))
+    response = resource.session.post(
+        remove_relation_url(resource.config.base_path, workspace_slug, project_id, work_item_id),
+        headers=resource._headers(),
+        json={"relation_type": relation_type, "related_issue": related_id},
+        timeout=resource.config.timeout,
+        allow_redirects=False,
+    )
+    if response.is_redirect:
+        raise ToolError(SIGNED_IN_ONLY)
+    if response.status_code == 500 and _pair_is_gone(resource, workspace_slug, project_id, work_item_id, related_id):
+        raise ToolError(ALREADY_REMOVED_TEMPLATE.format(item=work_item_id, related=related_id))
+    resource._handle_response(response)
+
+
+def _pair_is_gone(
+    resource: BaseResource, workspace_slug: str, project_id: str, work_item_id: str, related_id: str
+) -> bool:
+    try:
+        groups = _relation_groups(resource, workspace_slug, project_id, work_item_id)
+    except (HttpError, ToolError):
+        return False
+    return relation_type_with(groups, related_id) is None
+
+
 class SelfHostedDependencies(WorkItemDependencies):
     """Dependencies served from the self-hosted ``relations/`` route."""
 
     def list(self, workspace_slug: str, project_id: str, work_item_id: str) -> WorkItemDependencyResponse:
-        response = self._get(f"{workspace_slug}/projects/{project_id}/work-items/{work_item_id}/relations")
+        response = self._get(_relations_route(workspace_slug, project_id, work_item_id))
         return WorkItemDependencyResponse.model_validate(dependency_groups(response or {}))
 
     def create(
@@ -215,7 +322,7 @@ class SelfHostedDependencies(WorkItemDependencies):
         data: CreateWorkItemDependency,
     ) -> list[WorkItemWithRelationType]:
         self._post(
-            f"{workspace_slug}/projects/{project_id}/work-items/{work_item_id}/relations",
+            _relations_route(workspace_slug, project_id, work_item_id),
             {"relation_type": data.relation_type, "issues": data.work_item_ids},
         )
         return [
@@ -223,12 +330,22 @@ class SelfHostedDependencies(WorkItemDependencies):
             for target in data.work_item_ids
         ]
 
+    def remove(self, workspace_slug: str, project_id: str, work_item_id: str, related_work_item_id: str) -> None:
+        remove_relation(self, workspace_slug, project_id, work_item_id, related_work_item_id)
+
 
 class SelfHostedCustomRelations(WorkItemCustomRelations):
-    """Custom relation definitions are a Plane Cloud feature, so there are none to list."""
+    """Custom relation definitions are a Plane Cloud feature, so there are none to list.
+
+    Every relation lives in the one ``relations/`` system, so removing a "custom" one
+    removes the relation between the pair like a dependency removal does.
+    """
 
     def list(self, workspace_slug: str, project_id: str, work_item_id: str) -> dict[str, list[Any]]:
         return {}
+
+    def remove(self, workspace_slug: str, project_id: str, work_item_id: str, related_work_item_id: str) -> None:
+        remove_relation(self, workspace_slug, project_id, work_item_id, related_work_item_id)
 
 
 class SelfHostedWorkItems(WorkItems):

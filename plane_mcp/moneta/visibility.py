@@ -68,8 +68,8 @@ ENABLED_ACTIONS: Mapping[str, frozenset[str]] = {
     # update/delete exposed so the agent can fix or remove links; Plane lets any project member
     # edit any link, the same boundary as comments. moneta.links refuses non-http(s) URLs.
     "workitem_link": frozenset({"list", "retrieve", "create", "update", "delete"}),
-    # No delete: the self-hosted API has no route that removes a relation.
-    "workitem_relation": frozenset({"list", "create"}),
+    # delete goes through the web app's remove-relation route (moneta.selfhosted.remove_relation).
+    "workitem_relation": frozenset({"list", "create", "delete"}),
     # manage_workitems is the only way to undo an add: transfer moves every
     # incomplete item, and no work-item field carries cycle or module.
     "cycle": frozenset(
@@ -84,12 +84,7 @@ ENABLED_ACTIONS: Mapping[str, frozenset[str]] = {
 
 # Why an action is refused, where "not curated" would send the caller looking for a
 # permission they cannot get.
-REFUSED_ACTION_REASONS: Mapping[tuple[str, str], str] = {
-    ("workitem_relation", "delete"): (
-        "Removing a relation is not supported on this Plane server: its API has no route for it. "
-        "Remove the relation in the Plane web app."
-    ),
-}
+REFUSED_ACTION_REASONS: Mapping[tuple[str, str], str] = {}
 
 # Arguments every tool keeps whatever its actions declare.
 ALWAYS_ADVERTISED = frozenset({"action", "workspace_slug"})

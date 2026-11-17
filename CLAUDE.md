@@ -161,6 +161,9 @@ This repo follows the same convention as every other app in the bundle:
 
 - Work goes `branch` → PR into `foss-sandbox` → promote to `foss-main`. Never commit directly to
   either, and never target `foss-main` from a feature branch.
+- Every PR into `foss-sandbox` adds its entry to `appbox-docs/CHANGELOG.md` under **Unreleased** (anything a
+  client, gateway policy or operator must act on goes under **Behaviour changes**); cutting a tag
+  renames that heading to the tag. The promotion PR and the DevOps handoff take their notes from it.
 - The Moneta integration **is committed**, on `foss-main` and `foss-sandbox`. Do not look for it
   on `main`: `main` has no `plane_mcp/moneta/` package and no Cognito hook in `__main__.py`, so a
   server built from it has no SSO mode, no `list_workspaces`, and no `workspace_slug` argument.
@@ -200,9 +203,9 @@ the curated one.
 | `session_log.py` | Token-free, email-free `key=value` context for a dead MCP session, copied verbatim from outline-mcp so one grep covers both: `sub`, `username` (mPass id), `client_id`, `session_age` (`NdHHhMMmSSs` since the original login, from `UpstreamTokenSet.created_at`), `upstream_token` (8-hex sha256 prefix), `error`, `status`, `oauth_error`, `detail`; its `describe_*` functions never raise. `cognito.py` logs it at WARNING under one prefix, `grep 'MCP session'`: `MCP session refresh failed (client):` (plus `retryable=true\|false`), `MCP session refresh failed (background):`, `MCP session rejected (401):` and `MCP session refresh token unknown:`, with `session_lookup=timeout\|missing` when the 1s-bounded store read did not find the session. |
 | `client.py` | `bearer_for(token, claims)` (forwards the id_token), `plane_request_auth()` (base_url + headers for raw **app-API** calls). |
 | `apitoken.py` | Mints/caches a Plane `APIToken` and builds the dual-header `PlaneClient` (see "The `/api/v1` 401 fix"). |
-| `selfhosted.py` | `SelfHostedPlaneClient` — normalises the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) and serves plane-sdk 0.3's Cloud-only routes from the self-hosted ones: `*-lite` lists → `projects/`, `cycles/`, `modules/`, `members/` (name and email filters applied here); `dependencies/` → `relations/`; custom relations → none; the workspace-wide work-item list and the workspace state catalogue → an error naming `project_id`. |
+| `selfhosted.py` | `SelfHostedPlaneClient` — normalises the self-hosted API's response shapes (bare UUID `assignees`/`labels`, expanded `parent: {}`, bare-list cycles) and serves plane-sdk 0.3's Cloud-only routes from the self-hosted ones: `*-lite` lists → `projects/`, `cycles/`, `modules/`, `members/` (name and email filters applied here); `dependencies/` → `relations/`; custom relations → none; both relation removes → the app route `issues/<id>/remove-relation/` (`remove_relation`: checks the pair against `relations/` first, refuses an API-key-only connection and a sign-in redirect); the workspace-wide work-item list and the workspace state catalogue → an error naming `project_id`. |
 | `pql_guard.py` | `disable_pql(mcp)` — the self-hosted `/api/v1` list endpoints ignore `pql`, so `workitem`, `cycle` and `module` reject it with a `ToolError` instead of returning unfiltered results, and PQL is stripped from their descriptions; the `workitem list` line names `project_id` as required, since there is no workspace-wide list. |
-| `relations.py` | `restore_relation_types(mcp)` — upstream narrowed `workitem_relation create` to six dependency types; the self-hosted `relations/` route (`IssueRelationCreateSerializer.RELATION_TYPE_CHOICES`) also takes `relates_to` and `duplicate`, so those are routed straight to it, and the `relation_type` enum and footer advertise all eight. |
+| `relations.py` | `restore_relation_types(mcp)` — upstream narrowed `workitem_relation create` to six dependency types; the self-hosted `relations/` route (`IssueRelationCreateSerializer.RELATION_TYPE_CHOICES`) also takes `relates_to` and `duplicate`, so those are routed straight to it, and the `relation_type` enum and footer advertise all eight. The delete line drops `is_dependency`, which changes nothing here. |
 | `trims.py` | `apply_self_hosted_trims(mcp)` — refuses arguments the server cannot honour, with the reason (`member list_workspace`'s role-slug/activity/bot filters and paging; custom relation definitions), and rewrites descriptions that name missing features (workspace state catalogue, role definitions, label fields of hidden actions). |
 | `links.py` | `guard_link_urls(mcp)` — refuses a `url` on `workitem_link` that is not a plain `http(s)://` address, because the self-hosted link PATCH does not validate the scheme and the web app renders the value as an `href`. |
 | `listing.py` | `AdvertisedArguments` — a `tools/list`-only transform dropping hidden actions' arguments and the unsupported ones from each schema. Execution keeps the full schema, so a call that sends one reaches the guard that explains the refusal. |
@@ -307,7 +310,7 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
 | `workitem` | list, retrieve, retrieve_by_identifier, search, create, update, manage_assignee, manage_label |
 | `workitem_comment` | list, retrieve, create, update, delete |
 | `workitem_link` | list, retrieve, create, update, delete |
-| `workitem_relation` | list, create (no delete: the self-hosted API has no remove route) |
+| `workitem_relation` | list, create, delete (through the web app's session-authenticated remove route, so Cognito connections only) |
 | `cycle` | list, retrieve, create, update, list_workitems, manage_workitems, transfer_workitems, complete |
 | `module` | list, retrieve, list_workitems, manage_workitems |
 | `label`, `state` | list, retrieve (state needs `project_id`: no workspace state catalogue) |
@@ -320,7 +323,8 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
   retired tool names (`LegacyNames`) resolve to the resource with the action pre-bound, so
   `delete_work_item` is refused by the same guard and `list_milestones` is an unknown tool.
 - Arguments only hidden actions use are dropped from the listing by `AdvertisedArguments`, and
-  a refused action can carry a reason (`REFUSED_ACTION_REASONS`, e.g. relation delete).
+  a refused action can carry a reason (`REFUSED_ACTION_REASONS`). `UNADVERTISED_ARGUMENTS` (`trims.py`)
+  are also left out of the listing but accepted and ignored, e.g. `workitem_relation`'s `is_dependency`.
 - `apply_tool_visibility(mcp)` must run **last** of the tool rewrites in `apply_moneta_surface`:
   `disable_pql`, `restore_relation_types`, `apply_self_hosted_trims` and `add_workspace_arg`
   remove and re-add tools, which would discard an earlier filter.

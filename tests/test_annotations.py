@@ -187,11 +187,11 @@ async def test_listed_classification_follows_the_curated_actions(server: FastMCP
         "member": READ,
         "label": READ,
         "state": READ,
-        "workitem_relation": ADD,
         "project": DESTRUCTIVE,
         "workitem": DESTRUCTIVE,
         "workitem_comment": DESTRUCTIVE,
         "workitem_link": DESTRUCTIVE,
+        "workitem_relation": DESTRUCTIVE,
         "cycle": DESTRUCTIVE,
         "module": DESTRUCTIVE,
     }
