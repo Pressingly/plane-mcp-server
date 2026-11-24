@@ -5,7 +5,7 @@ from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.utilities.logging import get_logger
 
-from plane_mcp.moneta.header import header_base_url
+from plane_mcp.moneta.header import header_base_url, refuses_proxied_caller
 
 logger = get_logger(__name__)
 
@@ -45,6 +45,11 @@ class PlaneHeaderAuthProvider(TokenVerifier):
             from fastmcp.server.dependencies import get_http_headers
 
             headers = get_http_headers()
+
+            # Moneta fork: a private header route never accepts a proxied caller.
+            if refuses_proxied_caller(get_http_headers(include_all=True)):
+                logger.warning("API key refused: the header route is internal to the bundle")
+                return None
 
             if token:
                 workspace_slug = headers.get("x-workspace-slug")

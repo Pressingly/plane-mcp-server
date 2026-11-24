@@ -38,6 +38,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PLANE_INTERNAL_BASE_URL", EDGE_URL)
     monkeypatch.setenv("PLANE_BASE_URL", "https://pm.public.test")
     monkeypatch.setenv(HEADER_BASE_URL_ENV, HEADER_URL)
+    monkeypatch.setenv("COGNITO_USER_POOL_ID", "us-east-1_pool")
     monkeypatch.setenv("PLANE_WORKSPACE_SLUG", "acme")
     monkeypatch.delenv("PLANE_API_KEY", raising=False)
 
@@ -49,6 +50,19 @@ def test_header_base_url_prefers_the_header_setting() -> None:
 def test_header_base_url_falls_back_to_the_shared_base(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(HEADER_BASE_URL_ENV, " ")
     assert header_base_url() == EDGE_URL
+
+
+def test_header_base_url_is_ignored_outside_cognito_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upstream http mode mounts the header route without the fork's guard."""
+    monkeypatch.setenv("COGNITO_USER_POOL_ID", "")
+    assert header_base_url() == EDGE_URL
+
+
+def test_fallback_header_connection_keeps_the_shared_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COGNITO_USER_POOL_ID")
+    captured = _capture_client(monkeypatch, HEADER_TOKEN)
+    client_module.get_plane_client_context()
+    assert captured["base_url"] == EDGE_URL
 
 
 @pytest.mark.parametrize("auth_method", ["oauth", "api_key_env", "environment"])

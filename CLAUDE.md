@@ -184,7 +184,7 @@ Upstream files touched (the entire upstream footprint):
 |---|---|
 | `__main__.py` | http mode → `moneta.http.run()` when `moneta.http.enabled()` (i.e. `COGNITO_USER_POOL_ID` set), else upstream Plane-OAuth+SSE |
 | `client.py` | `_workspace_slug` calls `workspace_for(...)`; `get_plane_client_context` calls `base_url_for(...)`, `bearer_for(...)` and `build_plane_client(...)` |
-| `auth/plane_header_auth_provider.py` | `_validate_api_key` takes its base from `header_base_url()` |
+| `auth/plane_header_auth_provider.py` | `verify_token` refuses a proxied caller via `refuses_proxied_caller(...)`; `_validate_api_key` takes its base from `header_base_url()` |
 | `server.py` | `_configured` imports `ValidateActionArguments` from `moneta.middleware` (tolerates the injected `workspace_slug`) and returns `apply_moneta_surface(mcp)` after `register_tools` |
 
 `tools/__init__.py` is untouched: the fork surface is applied in `_configured`, so upstream's
@@ -215,8 +215,8 @@ the curated one.
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
 | `visibility.py` | `apply_tool_visibility(mcp)` — exposes only the curated resources and actions in `ENABLED_ACTIONS` (see "Tool visibility"). |
-| `header.py` | `header_base_url()` / `base_url_for(auth_method)`: `PLANE_HEADER_INTERNAL_BASE_URL` for the PAT header route, the shared base for every other path. |
-| `header_guard.py` | `InternalCallerGuard`: while `PLANE_HEADER_INTERNAL_BASE_URL` is set, the `/http/api-key` mount answers 403 to any request carrying `X-Forwarded-For` or `X-Forwarded-Host`, which Traefik always adds and the in-bundle access-agent never sends. |
+| `header.py` | `header_base_url()` / `base_url_for(auth_method)`: `PLANE_HEADER_INTERNAL_BASE_URL` for the PAT header route in Cognito mode, the shared base for every other path; `refuses_proxied_caller(headers)`, the forwarding-header check both guards share. |
+| `header_guard.py` | `InternalCallerGuard`: while `PLANE_HEADER_INTERNAL_BASE_URL` is set, the Cognito-mode `/http/api-key` mount answers 403 to any request carrying a forwarding header, which Traefik always adds and the in-bundle access-agent never sends. |
 | `storage.py` | `build_oauth_storage()` — Valkey **DB 12** + Fernet for the Cognito provider's OAuth state (via `MCP_OAUTH_STORAGE_URL`). |
 | `http.py` | `enabled()` / `build_app()` / `run()` — the Cognito HTTP server entry point (`build_app` mounts the guarded header route and the Cognito app) + self-contained JSON logging. |
 
@@ -344,7 +344,7 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
 | `MCP_OAUTH_STORAGE_URL` | `redis://valkey:6379/12` — Valkey DB 12, Fernet-encrypted OAuth state + minted-token cache. |
 | `MCP_JWT_SIGNING_KEY` | FastMCP token signing; fallback Fernet key material for public/PKCE clients. |
 | `PLANE_BASE_URL` | Public mPass URL (e.g. `https://pm.foss.local.dev`); used for both app routes and `/api/v1`. |
-| `PLANE_HEADER_INTERNAL_BASE_URL` | Opt-in plane-api URL (e.g. `http://plane-api:8000`) for the PAT header route `/http/api-key` only: key validation and its tool calls. Unset keeps `PLANE_INTERNAL_BASE_URL`. Set it only where `/http/api-key` is not publicly routed. The Cognito path never uses it. |
+| `PLANE_HEADER_INTERNAL_BASE_URL` | Opt-in plane-api URL (e.g. `http://plane-api:8000`) for the PAT header route `/http/api-key` only: key validation, its tool calls and its app-API calls. Honoured only in Cognito mode; unset keeps `PLANE_INTERNAL_BASE_URL`. Set it only where `/http/api-key` is not publicly routed. While set, the route refuses any request carrying `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP` or `Forwarded` (in `InternalCallerGuard` and in `PlaneHeaderAuthProvider.verify_token`), so callers must never send them. The Cognito path never uses it. |
 | `REQUESTS_CA_BUNDLE` | Devstack mkcert CA, so `requests`/plane-sdk trust the self-signed cert. |
 | `MCP_LOG_LEVEL` | `DEBUG` raises the fastmcp/moneta loggers (debug traces gate on `moneta.http._configure_logging`). |
 | `PLANE_MCP_ENABLED_TOOLS` | Optional comma-separated resource or retired tool names; **replaces** `ENABLED_ACTIONS` (see "Tool visibility"). Unset in devstack. |
