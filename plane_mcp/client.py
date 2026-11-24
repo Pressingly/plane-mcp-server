@@ -10,6 +10,7 @@ from plane import PlaneClient
 
 from plane_mcp.moneta.apitoken import build_plane_client
 from plane_mcp.moneta.client import bearer_for
+from plane_mcp.moneta.header import base_url_for
 from plane_mcp.moneta.workspace import workspace_for
 
 logger = get_logger(__name__)
@@ -80,6 +81,9 @@ def get_plane_client_context() -> PlaneClientContext:
         # Determine authentication method to use appropriate PlaneClient constructor
         auth_method = _connected_via(stored_access_token)
         token = stored_access_token.token
+
+        # Moneta fork: the PAT header route may use its own internal base URL.
+        base_url = base_url_for(auth_method)
 
         # For API key auth methods, use api_key parameter; for OAuth, use access_token
         if auth_method in ("api_key_env", "api_key_header"):

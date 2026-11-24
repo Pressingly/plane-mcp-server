@@ -214,6 +214,7 @@ the curated one.
 | `inject.py` | `add_workspace_arg(mcp)` — injects an optional `workspace_slug` arg onto every workspace-scoped tool without editing tool files. |
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
 | `visibility.py` | `apply_tool_visibility(mcp)` — exposes only the curated resources and actions in `ENABLED_ACTIONS` (see "Tool visibility"). |
+| `header.py` | `header_base_url()` / `base_url_for(auth_method)`: `PLANE_HEADER_INTERNAL_BASE_URL` for the PAT header route, the shared base for every other path. |
 | `storage.py` | `build_oauth_storage()` — Valkey **DB 12** + Fernet for the Cognito provider's OAuth state (via `MCP_OAUTH_STORAGE_URL`). |
 | `http.py` | `enabled()` / `run()` — the Cognito HTTP server entry point + self-contained JSON logging. |
 
@@ -341,6 +342,7 @@ There is no runtime discovery layer: an LLM sees the real surface on connect and
 | `MCP_OAUTH_STORAGE_URL` | `redis://valkey:6379/12` — Valkey DB 12, Fernet-encrypted OAuth state + minted-token cache. |
 | `MCP_JWT_SIGNING_KEY` | FastMCP token signing; fallback Fernet key material for public/PKCE clients. |
 | `PLANE_BASE_URL` | Public mPass URL (e.g. `https://pm.foss.local.dev`); used for both app routes and `/api/v1`. |
+| `PLANE_HEADER_INTERNAL_BASE_URL` | Opt-in plane-api URL (e.g. `http://plane-api:8000`) for the PAT header route `/http/api-key` only: key validation and its tool calls. Unset keeps `PLANE_INTERNAL_BASE_URL`. Set it only where `/http/api-key` is not publicly routed. The Cognito path never uses it. |
 | `REQUESTS_CA_BUNDLE` | Devstack mkcert CA, so `requests`/plane-sdk trust the self-signed cert. |
 | `MCP_LOG_LEVEL` | `DEBUG` raises the fastmcp/moneta loggers (debug traces gate on `moneta.http._configure_logging`). |
 | `PLANE_MCP_ENABLED_TOOLS` | Optional comma-separated resource or retired tool names; **replaces** `ENABLED_ACTIONS` (see "Tool visibility"). Unset in devstack. |

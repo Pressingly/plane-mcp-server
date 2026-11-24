@@ -1,10 +1,11 @@
-import os
 import time
 
 import httpx
 from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.utilities.logging import get_logger
+
+from plane_mcp.moneta.header import header_base_url
 
 logger = get_logger(__name__)
 
@@ -18,9 +19,8 @@ class PlaneHeaderAuthProvider(TokenVerifier):
 
     async def _validate_api_key(self, token: str) -> bool:
         """Validate the API key by calling the Plane API."""
-        base_url = (os.getenv("PLANE_INTERNAL_BASE_URL") or os.getenv("PLANE_BASE_URL", DEFAULT_PLANE_BASE_URL)).rstrip(
-            "/"
-        )
+        # Moneta fork: PLANE_HEADER_INTERNAL_BASE_URL when set (see plane_mcp.moneta.header).
+        base_url = header_base_url().rstrip("/")
         user_url = f"{base_url}/api/v1/users/me/"
 
         try:
