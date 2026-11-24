@@ -10,7 +10,7 @@ from plane import PlaneClient
 
 from plane_mcp.moneta.apitoken import build_plane_client
 from plane_mcp.moneta.client import bearer_for
-from plane_mcp.moneta.header import base_url_for
+from plane_mcp.moneta.header import base_url_for, shared_base_url
 from plane_mcp.moneta.workspace import workspace_for
 
 logger = get_logger(__name__)
@@ -68,7 +68,7 @@ def get_plane_client_context() -> PlaneClientContext:
     Raises:
         ConfigurationError: If access token is not available or workspace slug is missing
     """
-    base_url = os.getenv("PLANE_INTERNAL_BASE_URL") or os.getenv("PLANE_BASE_URL", "https://api.plane.so")
+    base_url = shared_base_url()
 
     api_key = os.getenv("PLANE_API_KEY", "")
     access_token = None

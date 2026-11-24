@@ -90,11 +90,29 @@ def test_stdio_keeps_the_shared_base(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["base_url"] == EDGE_URL
 
 
-def test_cognito_app_api_requests_keep_the_edge_base(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(moneta_client, "get_access_token", lambda: COGNITO_TOKEN)
+@pytest.mark.parametrize(
+    ("token", "expected_base", "credential_header", "credential"),
+    [
+        (COGNITO_TOKEN, EDGE_URL, "Authorization", "Bearer idtok"),
+        (HEADER_TOKEN, HEADER_URL, "X-Api-Key", "tok"),
+    ],
+    ids=["cognito", "header"],
+)
+def test_app_api_requests_follow_the_connection_base(
+    monkeypatch: pytest.MonkeyPatch, token: AccessToken, expected_base: str, credential_header: str, credential: str
+) -> None:
+    monkeypatch.setattr(moneta_client, "get_access_token", lambda: token)
+    base_url, headers = moneta_client.plane_request_auth()
+    assert base_url == expected_base
+    assert headers[credential_header] == credential
+
+
+def test_stdio_app_api_requests_keep_the_shared_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PLANE_API_KEY", "pat")
+    monkeypatch.setattr(moneta_client, "get_access_token", lambda: None)
     base_url, headers = moneta_client.plane_request_auth()
     assert base_url == EDGE_URL
-    assert headers["Authorization"] == "Bearer idtok"
+    assert headers["X-Api-Key"] == "pat"
 
 
 def _plane_answering(monkeypatch: pytest.MonkeyPatch, status: int) -> list[httpx.Request]:
