@@ -183,7 +183,8 @@ Upstream files touched (the entire upstream footprint):
 | File | Hook |
 |---|---|
 | `__main__.py` | http mode → `moneta.http.run()` when `moneta.http.enabled()` (i.e. `COGNITO_USER_POOL_ID` set), else upstream Plane-OAuth+SSE |
-| `client.py` | `_workspace_slug` calls `workspace_for(...)`; `get_plane_client_context` calls `bearer_for(...)` and `build_plane_client(...)` |
+| `client.py` | `_workspace_slug` calls `workspace_for(...)`; `get_plane_client_context` calls `base_url_for(...)`, `bearer_for(...)` and `build_plane_client(...)` |
+| `auth/plane_header_auth_provider.py` | `_validate_api_key` takes its base from `header_base_url()` |
 | `server.py` | `_configured` imports `ValidateActionArguments` from `moneta.middleware` (tolerates the injected `workspace_slug`) and returns `apply_moneta_surface(mcp)` after `register_tools` |
 
 `tools/__init__.py` is untouched: the fork surface is applied in `_configured`, so upstream's
