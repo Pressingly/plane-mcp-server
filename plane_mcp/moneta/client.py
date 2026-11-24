@@ -23,6 +23,7 @@ from fastmcp.server.dependencies import get_access_token
 from fastmcp.utilities.logging import get_logger
 
 from plane_mcp.moneta.cognito import COGNITO_USERNAME_CLAIM, ID_TOKEN_KEY, UPSTREAM_CLAIMS_KEY
+from plane_mcp.moneta.header import base_url_for, shared_base_url
 
 logger = get_logger(__name__)
 
@@ -68,13 +69,14 @@ def plane_request_auth() -> tuple[str, dict[str, str]]:
     ``requests`` honors ``REQUESTS_CA_BUNDLE`` for the devstack's self-signed cert
     automatically.
     """
-    base_url = os.getenv("PLANE_INTERNAL_BASE_URL") or os.getenv("PLANE_BASE_URL", "https://api.plane.so")
+    base_url = shared_base_url()
     api_key = os.getenv("PLANE_API_KEY", "")
     access_token: str | None = None
 
     stored = _stored_access_token()
     if stored:
         auth_method = stored.claims.get("auth_method", "oauth")
+        base_url = base_url_for(auth_method)
         token = stored.token
         if auth_method in ("api_key_env", "api_key_header"):
             api_key = token

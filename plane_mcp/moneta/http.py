@@ -33,6 +33,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from plane_mcp.moneta.cognito import PlaneCognitoProvider
+from plane_mcp.moneta.header_guard import InternalCallerGuard
 from plane_mcp.moneta.storage import build_oauth_storage
 from plane_mcp.server import _configured, get_header_mcp
 
@@ -243,12 +244,8 @@ async def healthz(_request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def run() -> None:
-    """Validate env, build the Starlette app, and serve it with uvicorn."""
-    validate_env()
-
-    cognito_app = get_cognito_http_mcp().http_app(stateless_http=True)
-    header_app = get_header_mcp().http_app(stateless_http=True)
+def build_app(cognito_app: Starlette, header_app: Starlette) -> Starlette:
+    """The served app: health check, the PAT header route behind its guard, and Cognito OAuth."""
 
     @asynccontextmanager
     async def lifespan(app):
@@ -260,7 +257,8 @@ def run() -> None:
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
             # PAT-header mode stays available alongside Cognito OAuth.
-            Mount("/http/api-key", app=header_app),
+            # InternalCallerGuard refuses proxied callers once it reaches plane-api directly.
+            Mount("/http/api-key", app=InternalCallerGuard(header_app)),
             # AWSCognitoProvider publishes /.well-known/* on the mounted app.
             Mount("/", app=cognito_app),
         ],
@@ -272,6 +270,17 @@ def run() -> None:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+    return app
+
+
+def run() -> None:
+    """Validate env, build the Starlette app, and serve it with uvicorn."""
+    validate_env()
+
+    app = build_app(
+        get_cognito_http_mcp().http_app(stateless_http=True),
+        get_header_mcp().http_app(stateless_http=True),
     )
 
     _configure_logging()

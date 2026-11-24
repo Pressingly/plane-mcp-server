@@ -163,6 +163,7 @@ Self-hosting the server itself:
 | Variable | Purpose |
 |---|---|
 | `PLANE_INTERNAL_BASE_URL` | Internal URL for server-to-server calls, preferred over `PLANE_BASE_URL` |
+| `PLANE_HEADER_INTERNAL_BASE_URL` | Internal URL for the `/http/api-key` header route only (validation and tool calls), honoured only in Cognito mode (`COGNITO_USER_POOL_ID` set); falls back to `PLANE_INTERNAL_BASE_URL`. While it is set, the route refuses any request carrying `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP` or `Forwarded`, so its callers (the in-bundle access-agent) must never send those headers |
 | `REDIS_URL` | OAuth token storage as one connection URL (`redis://` or `rediss://` for TLS); wins over host/port |
 | `REDIS_HOST` / `REDIS_PORT` | OAuth token storage; falls back to in-memory |
 | `PLANE_OAUTH_PROVIDER_*` | OAuth client credentials and base URL |
