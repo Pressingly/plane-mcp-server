@@ -216,8 +216,9 @@ the curated one.
 | `tools.py` | `register_moneta_tools(mcp)` — the one fork tool, `list_workspaces`. |
 | `visibility.py` | `apply_tool_visibility(mcp)` — exposes only the curated resources and actions in `ENABLED_ACTIONS` (see "Tool visibility"). |
 | `header.py` | `header_base_url()` / `base_url_for(auth_method)`: `PLANE_HEADER_INTERNAL_BASE_URL` for the PAT header route, the shared base for every other path. |
+| `header_guard.py` | `InternalCallerGuard`: while `PLANE_HEADER_INTERNAL_BASE_URL` is set, the `/http/api-key` mount answers 403 to any request carrying `X-Forwarded-For` or `X-Forwarded-Host`, which Traefik always adds and the in-bundle access-agent never sends. |
 | `storage.py` | `build_oauth_storage()` — Valkey **DB 12** + Fernet for the Cognito provider's OAuth state (via `MCP_OAUTH_STORAGE_URL`). |
-| `http.py` | `enabled()` / `run()` — the Cognito HTTP server entry point + self-contained JSON logging. |
+| `http.py` | `enabled()` / `build_app()` / `run()` — the Cognito HTTP server entry point (`build_app` mounts the guarded header route and the Cognito app) + self-contained JSON logging. |
 
 ## Cognito / mPass identity relay
 
